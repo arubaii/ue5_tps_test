@@ -807,3 +807,91 @@ struct NAMETBD_API FInfoCardSpec
 	TArray<TObjectPtr<UNameTBD_Payload>> Payloads;
 
 };
+
+/**
+ * Where a card opens - the placement fields of an Info Card entry (FInfoCardSpec, Placement) in one struct, for the widgets
+ * that build their cards themselves: beside the widget (To Icon), at the cursor (To Cursor) or at a corner of the screen
+ * (To Viewport). Used by the Context Menu Style (menus, row tooltips), Context Menu Anchors' Override Positioning, Button
+ * rows' attached menus and Tooltip Card Anchors' Position.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FInfoCardPositioning
+{
+	GENERATED_BODY()
+
+	/** To Cursor: where the click landed. To Icon: beside the widget (a dropdown, a flyout). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Position Mode"))
+	EInfoCardPosition PositionMode = EInfoCardPosition::ToCursor;
+
+	/** Which side of the widget the card opens on. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon", EditConditionHides))
+	EDirection2D IconPosition = EDirection2D::Down;
+
+	/** Fill Icon: the inset from each edge of the widget. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon && IconPosition == EDirection2D::FillIcon", EditConditionHides))
+	FMargin FillIconPadding = FMargin(0.f);
+
+	/** The gap between the widget and the card. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Icon Anchor Padding", EditCondition = "PositionMode == EInfoCardPosition::ToIcon", EditConditionHides, UIMin = "0", UIMax = "32", ForceUnits = "px"))
+	float IconAnchorPadding = 2.f;
+
+	/** Which way from the cursor the card opens. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
+	EInfoCardCursorPosition CursorPosition = EInfoCardCursorPosition::DownRight;
+
+	/**
+	 * A To Cursor card opened from a key or a gamepad (a context menu's Open Context Menu with Focus First Entry) has no cursor
+	 * spot to open at: it opens beside the widget instead, on this side.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "From Keyboard", EditCondition = "PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
+	EDirection2D KeyboardIconPosition = EDirection2D::Down;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToViewport", EditConditionHides))
+	EViewportPosition ViewportPosition = EViewportPosition::TopRight;
+
+	/** Moves the card from the cursor or the screen corner. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor || PositionMode == EInfoCardPosition::ToViewport", EditConditionHides))
+	FVector2D CardOffset = FVector2D(2.f, 2.f);
+
+	/** Keeps the whole card on screen. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Clamp To Viewport"))
+	bool bClampToViewport = true;
+
+	/** A card that would run off the screen opens on the other side first (left of the cursor, above the widget). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Flip To Avoid Clipping", EditCondition = "bClampToViewport && PositionMode != EInfoCardPosition::ToViewport", EditConditionHides))
+	bool bFlipToAvoidClipping = true;
+
+	/** Room kept between the card and the screen's edge. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "bClampToViewport", EditConditionHides, ClampMin = "0", UIMax = "64", ForceUnits = "px"))
+	float ClampPadding = 8.f;
+
+	/**
+	 * Moves away from other cards on screen, and keeps a card beside a menu row off the rest of its menu chain. Off: the card
+	 * stays exactly where it opened.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Avoid Overlapping Cards"))
+	bool bAvoidOverlappingCards = false;
+
+	/**
+	 * Keeps moving with the cursor while open. Off: the card stays where it opened, as desktop menus do. (To Icon and To
+	 * Viewport cards always follow their widget / the screen.)
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Follow Cursor", EditCondition = "PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
+	bool bFollowCursor = false;
+
+	/** The card widget's own render transform, on top of where it was placed. Visual only. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (AdvancedDisplay))
+	FWidgetTransform CardTransform;
+
+	/** Writes these into an info card entry. bFromKeyboard: the opening came from a key (To Cursor goes beside the widget). */
+	void ApplyTo(FInfoCardSpec& Spec, bool bFromKeyboard = false) const;
+
+	/** An entry's placement as these fields (Follow Cursor from its per-tick update; From Keyboard left Down). */
+	static FInfoCardPositioning FromSpec(const FInfoCardSpec& Spec);
+
+	/**
+	 * Beside the widget on Side, Gap away, following it, flipping and clamping, clear of other cards: a tooltip's placement
+	 * (Up), a submenu's and an attached menu's (Right).
+	 */
+	static FInfoCardPositioning MakeBeside(EDirection2D Side, float Gap);
+};

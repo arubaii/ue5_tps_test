@@ -52,9 +52,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tooltip", AdvancedDisplay, meta = (InlineEditConditionToggle))
 	bool bOverrideTooltipPosition = false;
 
-	/** Where this tooltip sits around the widget, instead of the template's. */
+	/**
+	 * Where this tooltip opens, instead of the template's - every placement an Info Card entry has: beside the widget (To
+	 * Icon: side, gap), at the cursor (To Cursor: corner, offset, follow), at a screen corner, clamping, flipping, overlap
+	 * avoidance, a render transform. Off: shows the template's.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tooltip", AdvancedDisplay, meta = (DisplayName = "Position", EditCondition = "bOverrideTooltipPosition"))
-	EDirection2D TooltipPosition = EDirection2D::Up;
+	FInfoCardPositioning TooltipPositioning = FInfoCardPositioning::MakeBeside(EDirection2D::Up, 6.f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tooltip", AdvancedDisplay, meta = (InlineEditConditionToggle))
 	bool bOverrideTooltipDelay = false;
@@ -93,6 +97,14 @@ public:
 	/** The built-in tooltip entry, before text: what a Tooltip Card Anchor uses with no template anywhere. */
 	static FInfoCardSpec MakeBuiltInTooltipSpec();
 
+	/**
+	 * Leaves other cards open when this tooltip shows, whatever its template's Close Other Cards Scope says (a menu row's
+	 * tooltip must not close its menu). Not saved: for anchors built in code.
+	 */
+	void SetKeepsOtherCardsOpen(bool bKeep) { bKeepsOtherCardsOpen = bKeep; }
+
+	virtual void PostLoad() override;
+
 protected:
 
 	virtual bool UsesGeneratedInfoCards() const override { return true; }
@@ -100,6 +112,15 @@ protected:
 
 	/** The template in force: this anchor's, else the project's (loaded on first use). */
 	const UInfoCardDataAsset* ResolveTemplate() const;
+
+	bool bKeepsOtherCardsOpen = false;
+
+#if WITH_EDITORONLY_DATA
+	// The side-only Position from before it took every placement field. Loaded from old anchors through CoreRedirects
+	// (Config/DefaultNameTBD.ini), turned into Tooltip Positioning in PostLoad, never saved again (CPF_Deprecated).
+	UPROPERTY()
+	EDirection2D TooltipPosition_DEPRECATED = EDirection2D::Up;
+#endif
 };
 
 /** Blueprint helpers for giving widgets info cards and tooltips without setting up an anchor by hand. */

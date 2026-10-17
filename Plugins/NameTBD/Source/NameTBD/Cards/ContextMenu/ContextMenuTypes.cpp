@@ -50,8 +50,70 @@ namespace ContextMenuTypesPrivate
 }
 
 // =================================================================================================
+// Row tooltips, bindings
+// =================================================================================================
+
+FContextMenuTooltipStyle::FContextMenuTooltipStyle()
+{
+	// Below-right of the cursor, as desktop menus' item tips are: a submenu opening beside the row doesn't cover it.
+	Positioning.PositionMode = EInfoCardPosition::ToCursor;
+	Positioning.CursorPosition = EInfoCardCursorPosition::DownRight;
+	Positioning.CardOffset = FVector2D(12.f, 20.f);
+	Positioning.bAvoidOverlappingCards = true;
+}
+
+FContextMenuBindingStyle::FContextMenuBindingStyle()
+{
+	KeyDelimiter = INVTEXT("+");
+	BindingSeparator = INVTEXT(", ");
+	FrameBrush = ContextMenuTypesPrivate::MakeRoundedBrush(FLinearColor(1.f, 1.f, 1.f, 0.06f), 4.f, FLinearColor(1.f, 1.f, 1.f, 0.22f), 1.f);
+}
+
+// =================================================================================================
 // FContextMenuEntry
 // =================================================================================================
+
+int32 FContextMenuEntry::CountLeftIcons() const
+{
+	int32 Count = 0;
+	for (const FContextMenuIcon& Icon : LeftIcons)
+	{
+		Count += Icon.IsSet() ? 1 : 0;
+	}
+	return Count;
+}
+
+void FContextMenuEntry::PostSerialize(const FArchive& Ar)
+{
+#if WITH_EDITORONLY_DATA
+	if (!Ar.IsLoading())
+	{
+		return;
+	}
+
+	// One icon per side became a list per side.
+	auto MoveIcon = [](FContextMenuIcon& Old, TArray<FContextMenuIcon>& Into)
+	{
+		if (Old.IsSet() && Into.IsEmpty())
+		{
+			Into.Add(Old);
+		}
+		Old = FContextMenuIcon();
+	};
+	MoveIcon(LeftIcon_DEPRECATED, LeftIcons);
+	MoveIcon(CenterIcon_DEPRECATED, CenterIcons);
+	MoveIcon(RightIcon_DEPRECATED, RightIcons);
+
+	// A Text Divider's own alignment (Left was the default, and reads the same as the style's default) became Style Default
+	// or a choice of its own. Fill always drew as Left.
+	if (HeaderAlignment_DEPRECATED != HAlign_Left && TextDividerAlignment == EContextMenuTextDividerAlignment::StyleDefault)
+	{
+		TextDividerAlignment = HeaderAlignment_DEPRECATED == HAlign_Center ? EContextMenuTextDividerAlignment::Center
+			: (HeaderAlignment_DEPRECATED == HAlign_Right ? EContextMenuTextDividerAlignment::Right : EContextMenuTextDividerAlignment::Left);
+	}
+	HeaderAlignment_DEPRECATED = HAlign_Left;
+#endif
+}
 
 FString FContextMenuEntry::GetIdSourceText() const
 {
@@ -119,6 +181,8 @@ void FContextMenuStyle::UseDefaultFontAssets()
 	LabelFont = ContextMenuTypesPrivate::MakeFontAsset(TEXT("Regular"), 10);
 	ShortcutFont = ContextMenuTypesPrivate::MakeFontAsset(TEXT("Regular"), 9);
 	HeaderFont = ContextMenuTypesPrivate::MakeFontAsset(TEXT("Bold"), 8);
+	RowTooltips.TextStyle.TitleFont = ContextMenuTypesPrivate::MakeFontAsset(TEXT("Bold"), 11);
+	RowTooltips.TextStyle.BodyFont = ContextMenuTypesPrivate::MakeFontAsset(TEXT("Regular"), 10);
 }
 
 UContextMenuStyleAsset::UContextMenuStyleAsset()

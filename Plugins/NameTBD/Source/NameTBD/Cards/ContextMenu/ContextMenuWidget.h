@@ -21,6 +21,8 @@ class UPanelWidget;
 class UScrollBox;
 class USizeBox;
 class UTextBlock;
+class UTooltipCardAnchor;
+struct FMenuImage;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FContextMenuEntryChosenSignature, FName, EntryId, bool, bIsChecked);
 
@@ -31,10 +33,15 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FContextMenuEntryChosenSignature, F
  * The C++ class builds its own parts. Make a Widget Blueprint from it (and pick it as the style's Entry Widget Class) to lay a
  * row out yourself; it then builds nothing and fills the parts it finds by name, all optional:
  *   RowButton (Context Menu Button: clicks, focus, states), RowHighlight (Border: the style's highlight / pressed brush),
- *   LabelText, RightText, ShortcutText, HeaderText (Text Blocks), LeftIcon, CenterIcon, RightIcon, CheckMark, SubmenuArrow
- *   (Image or SVG Image: shown, hidden and tinted), DividerLine (any widget: shown for dividers), SubmenuAnchor (Info Card
- *   Anchor around RowButton, for submenus).
+ *   LabelText, CenterText, RightText, ShortcutText, HeaderText (Text Blocks), LeftIcon, CenterIcon, RightIcon (the first
+ *   icon of each list; LeftIcon_1, LeftIcon_2... take the next ones), CheckMark, SubmenuArrow (Image or SVG Image: shown,
+ *   hidden and tinted), BindingsBox (a panel the shortcuts' keys are built into when they are drawn as art or framed; without
+ *   one, ShortcutText shows them as text), DividerLine (any widget: shown for dividers), SubmenuAnchor (Info Card Anchor
+ *   around RowButton, for submenus and attached menus), TooltipAnchor (Tooltip Card Anchor around RowButton, for the style's
+ *   Tooltip Card row tooltips).
  * The native parts carry the same names, so a Row Button Preset's Shape and Design Targets can aim at LabelText, LeftIcon...
+ * The style's alignment options (content, label / center / right / shortcut text, Text Dividers) lay out the native parts; a
+ * Widget Blueprint row keeps its own layout.
  * On Menu Entry Set and On Highlight Changed are there for anything else a Widget Blueprint wants to do.
  */
 UCLASS(Blueprintable, meta = (DisplayName = "Context Menu Entry Widget"))
@@ -46,11 +53,20 @@ public:
 
 	/**
 	 * Builds (C++ class) or fills (Widget Blueprint) the row for InEntry. Actions are the entry's actions already copied for
-	 * this menu; TagActions those of its Button Tag. bReserveIconColumn keeps the left icon column even when this row has
-	 * no icon, so labels line up.
+	 * this menu; TagActions those of its Button Tag. LeftColumnIcons: how many icons wide the left icon column is (the most
+	 * any row of the menu has; 0: none), kept even when this row has fewer, so labels line up.
 	 */
 	void SetupEntry(const FContextMenuEntry& InEntry, const FContextMenuStyle& InStyle, UContextMenuWidget* InMenu, int32 InIndex,
-		bool bReserveIconColumn, const TArray<UButtonAction*>& InActions, const TArray<UButtonAction*>& InTagActions);
+		int32 LeftColumnIcons, const TArray<UButtonAction*>& InActions, const TArray<UButtonAction*>& InTagActions);
+
+	/** The width of a left icon column InIconCount icons wide in InStyle (icon size, gaps, delimiters). */
+	static float GetIconColumnWidth(const FContextMenuStyle& InStyle, int32 InIconCount);
+
+	/** Whether a key press chooses this row: its Shortcut, More Shortcuts, Gamepad Shortcut or Shortcut Input Action's keys. */
+	bool MatchesShortcut(const FInputChord& Pressed) const;
+
+	/** The bindings this row shows (or answers to), each a list of keys: Ctrl, C. bForDisplay: the style's device rules apply. */
+	void GatherBindings(TArray<TArray<FKey>>& OutBindings, bool bForDisplay) const;
 
 	UFUNCTION(BlueprintPure, Category = "Context Menu")
 	const FContextMenuEntry& GetEntry() const { return Entry; }
@@ -89,11 +105,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Context Menu")
 	bool IsHighlighted() const { return bHighlighted; }
 
-	/** Submenu rows: opens the submenu now (bFocusFirstEntry: with its first row focused, for keyboard and gamepad). */
+	/** Submenu rows and rows with an Attached Menu: opens it now (bFocusFirstEntry: with its first row focused, for keyboard and gamepad). */
 	bool OpenSubmenu(bool bFocusFirstEntry);
 
-	/** Submenu rows: the open submenu, or null. */
+	/** Submenu rows and rows with an Attached Menu: the open one, or null. */
 	UContextMenuWidget* GetOpenSubmenu() const;
+
+	/** A row that opens a menu beside it: a Submenu, or a Button with an Attached Menu. */
+	bool OpensMenuBeside() const { return Entry.EntryType == EContextMenuEntryType::Submenu || Entry.HasAttachedMenu(); }
 
 	/** The entry's own actions (copied for this menu) and those of its Button Tag. */
 	const TArray<TObjectPtr<UButtonAction>>& GetRowActions() const { return RowActions; }
@@ -129,6 +148,9 @@ protected:
 	TObjectPtr<UTextBlock> LabelText;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
+	TObjectPtr<UTextBlock> CenterText;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
 	TObjectPtr<UTextBlock> RightText;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
@@ -136,6 +158,9 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
 	TObjectPtr<UTextBlock> HeaderText;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
+	TObjectPtr<UPanelWidget> BindingsBox;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
 	TObjectPtr<UWidget> LeftIcon;
@@ -158,6 +183,9 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
 	TObjectPtr<UInfoCardAnchor> SubmenuAnchor;
 
+	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
+	TObjectPtr<UTooltipCardAnchor> TooltipAnchor;
+
 	/** The entry as shown (after overrides, Button Tag text and icons, action checks). */
 	UPROPERTY(BlueprintReadOnly, Category = "Context Menu")
 	FContextMenuEntry Entry;
@@ -168,6 +196,28 @@ protected:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UButtonAction>> RowTagActions;
 
+	/** Every icon of each list, in order (the first is LeftIcon / CenterIcon / RightIcon), and the delimiters between them. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UWidget>> LeftIconParts;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UWidget>> CenterIconParts;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UWidget>> RightIconParts;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTextBlock>> IconDelimiterParts;
+
+	/** The shortcuts' parts built into BindingsBox: key names, delimiters and separators; key art and its own tint. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTextBlock>> BindingTextParts;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UWidget>> BindingImageParts;
+
+	TArray<FLinearColor> BindingImageTints;
+
 	TWeakObjectPtr<UContextMenuWidget> OwningMenu;
 	FContextMenuStyle EntryStyle;
 	int32 EntryIndex = INDEX_NONE;
@@ -176,20 +226,35 @@ protected:
 	bool bPressedLook = false;
 	bool bUsesRowPreset = false;
 
+	/** The C++ class built this row's parts (the style's alignment options apply); false for a Widget Blueprint's own. */
+	bool bBuiltNativeTree = false;
+
 private:
 
-	void BuildNativeTree(bool bReserveIconColumn);
-	UWidget* BuildButtonRow(bool bReserveIconColumn);
+	void BuildNativeTree(int32 LeftColumnIcons);
+	UWidget* BuildButtonRow(int32 LeftColumnIcons);
 	UWidget* BuildDividerRow();
 
 	/** A Size Box of the style's icon size holding an Image or SVG Image for Icon (or a text glyph when Icon is unset and Glyph isn't empty). */
 	UWidget* MakeIconPart(const FContextMenuIcon& Icon, FName PartName, const TCHAR* Glyph, TObjectPtr<UWidget>& OutPart);
 
+	/** A Horizontal Box of an icon part per set icon (named Base, Base_1...), Icon Gap and Icon Delimiter between them. */
+	UWidget* MakeIconList(const TArray<FContextMenuIcon>& Icons, const TCHAR* Base, TArray<TObjectPtr<UWidget>>& OutParts);
+
 	/** A line for dividers and text dividers. */
 	UWidget* MakeLine(FName PartName);
 
+	/** A Text Block in the binding font, kept for the state colours. */
+	UTextBlock* MakeBindingText(const FText& InText);
+
+	/** An Image or SVG Image of a key's art, Glyph Height tall. */
+	UWidget* MakeGlyphImage(const FMenuImage& Art);
+
 	void FillParts();
+	void FillIconParts();
+	void FillBindings();
 	void SetupSubmenuAnchor();
+	void SetupTooltip();
 	void ApplyStateLook();
 	void ApplyIcon(UWidget* Part, const FContextMenuIcon& Icon, const FLinearColor& StateTint) const;
 	void TintIcon(UWidget* Part, const FContextMenuIcon& Icon, const FLinearColor& StateTint) const;

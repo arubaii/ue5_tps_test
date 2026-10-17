@@ -278,6 +278,11 @@ namespace NameTBDAIJson
 		const FString Key = Normalize(Name);
 		TArray<FProperty*> Starts;
 		TArray<FProperty*> Contains;
+
+		// Exact matches by rank, whatever order the fields come in: the property's own name, then its display name, then a
+		// bool without its b. A shape's "Fill" is its Fill paint, not bFill (whose display name is also "Fill").
+		FProperty* ByDisplay = nullptr;
+		FProperty* ByBareBool = nullptr;
 		for (TFieldIterator<FProperty> It(Struct); It; ++It)
 		{
 			FProperty* Property = *It;
@@ -288,9 +293,17 @@ namespace NameTBDAIJson
 			const FString Own = Normalize(Property->GetAuthoredName());
 			FString Display = Normalize(Property->GetMetaData(TEXT("DisplayName")));
 			const bool bBool = CastField<FBoolProperty>(Property) != nullptr;
-			if (Own == Key || (!Display.IsEmpty() && Display == Key) || (bBool && Own.StartsWith(TEXT("b")) && Own.Mid(1) == Key))
+			if (Own == Key)
 			{
 				return Property;
+			}
+			if (!ByDisplay && !Display.IsEmpty() && Display == Key)
+			{
+				ByDisplay = Property;
+			}
+			if (!ByBareBool && bBool && Own.StartsWith(TEXT("b")) && Own.Mid(1) == Key)
+			{
+				ByBareBool = Property;
 			}
 			const FString Bare = bBool && Own.StartsWith(TEXT("b")) ? Own.Mid(1) : Own;
 			if (Key.Len() >= 3 && (Bare.StartsWith(Key) || (!Display.IsEmpty() && Display.StartsWith(Key))))
@@ -301,6 +314,10 @@ namespace NameTBDAIJson
 			{
 				Contains.Add(Property);
 			}
+		}
+		if (ByDisplay || ByBareBool)
+		{
+			return ByDisplay ? ByDisplay : ByBareBool;
 		}
 		if (Starts.Num() == 1)
 		{

@@ -144,8 +144,19 @@ bool UTooltipCardAnchor::BuildGeneratedInfoCards(TArray<FInfoCardSpec>& OutSpecs
 
 	if (bOverrideTooltipPosition)
 	{
-		Spec.PositionMode = EInfoCardPosition::ToIcon;
-		Spec.IconPosition = TooltipPosition;
+		TooltipPositioning.ApplyTo(Spec);
+	}
+#if WITH_EDITOR
+	else if (IsDesignTime())
+	{
+		// An override not switched on shows the template's placement, so switching it on starts from there.
+		TooltipPositioning = FInfoCardPositioning::FromSpec(Spec);
+	}
+#endif
+
+	if (bKeepsOtherCardsOpen)
+	{
+		Spec.CloseOtherCardsScope = ECardCloseOthersScope::None;
 	}
 
 	if (bOverrideTooltipDelay)
@@ -162,6 +173,24 @@ bool UTooltipCardAnchor::BuildGeneratedInfoCards(TArray<FInfoCardSpec>& OutSpecs
 
 	OutSpecs.Add(MoveTemp(Spec));
 	return true;
+}
+
+void UTooltipCardAnchor::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITORONLY_DATA
+	// The old override only chose the side (To Icon), keeping the rest of the template's placement: the rest is taken from
+	// this anchor's own template when it has one (already loaded with it), else from the built-in tooltip.
+	if (bOverrideTooltipPosition && TooltipPosition_DEPRECATED != EDirection2D::Up)
+	{
+		const FInfoCardSpec* TemplateSpec = TooltipTemplate && TooltipTemplate->InfoCards.Num() > 0 ? &TooltipTemplate->InfoCards[0] : nullptr;
+		TooltipPositioning = FInfoCardPositioning::FromSpec(TemplateSpec ? *TemplateSpec : MakeBuiltInTooltipSpec());
+		TooltipPositioning.PositionMode = EInfoCardPosition::ToIcon;
+		TooltipPositioning.IconPosition = TooltipPosition_DEPRECATED;
+	}
+	TooltipPosition_DEPRECATED = EDirection2D::Up;
+#endif
 }
 
 void UTooltipCardAnchor::SetTooltipCardText(FText NewText, FText NewTitle)

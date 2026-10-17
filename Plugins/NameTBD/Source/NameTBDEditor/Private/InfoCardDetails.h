@@ -14,6 +14,8 @@
  *     which were one long wall of fields. Rows hidden by name (a Card ID shown as the element's title) never appear.
  *   - FInfoCardPayloadDefaultCustomization: an anchor's Payload Defaults element as its Card ID, the payload's type as plain
  *     text, and the payload's own fields directly under it (Title, Body) - instead of Card ID row > class dropdown > object.
+ *   - FContextMenuEntryOverrideCustomization: an anchor's Entry Overrides element as its Entry ID with the Remove check box
+ *     beside it; the element's fields grey out while it is removed.
  *   - FInfoCardGeneratedAnchorDetails: the Tooltip Card Anchor and Context Menu Anchor, which build their cards from their own
  *     fields, with the generic anchor's sources hidden and their own category first.
  */
@@ -40,7 +42,6 @@ public:
 	static TSharedRef<IPropertyTypeCustomization> MakeMenuEntryInstance();
 	static TSharedRef<IPropertyTypeCustomization> MakeSettingsOverrideInstance();
 	static TSharedRef<IPropertyTypeCustomization> MakeAnimationOverrideInstance();
-	static TSharedRef<IPropertyTypeCustomization> MakeEntryOverrideInstance();
 
 	virtual void CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
 	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
@@ -58,6 +59,23 @@ public:
 
 	virtual void CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
 	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
+};
+
+class FContextMenuEntryOverrideCustomization : public IPropertyTypeCustomization
+{
+public:
+
+	static TSharedRef<IPropertyTypeCustomization> MakeInstance();
+
+	virtual void CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
+	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
+
+private:
+
+	/** The element's fields can be edited: it isn't removed (or several anchors disagree). */
+	bool IsKept() const;
+
+	TSharedPtr<IPropertyHandle> RemoveHandle;
 };
 
 class FInfoCardGeneratedAnchorDetails : public IDetailCustomization

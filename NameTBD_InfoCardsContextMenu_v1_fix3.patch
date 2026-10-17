@@ -1,0 +1,2651 @@
+diff --git a/Docs/Design/AIAssistant.md b/Docs/Design/AIAssistant.md
+index 715bba8..77858e2 100644
+--- a/Docs/Design/AIAssistant.md
++++ b/Docs/Design/AIAssistant.md
+@@ -10,7 +10,7 @@
+ ### Tool layer
+ - `FNameTBDAITool` {Name, Description, InputSchema, bWrites, bInAskMode, bOptIn, Run}; `NameTBDAITools::Register / Execute`. `FNameTBDAISchema` builds the plain JSON-Schema subset every provider takes. `Execute` checks required fields and coerces what models get loose (numbers as strings, objects and lists as JSON text - needed for Gemini, whose schema subset can't hold free-form objects - single values for lists, enums matched loosely), refuses writes where they're off, and runs a write inside an `FScopedTransaction` (nested into the chat request's own open transaction when there is one).
+ - `FNameTBDAIToolResult` {bOk, Data (compact JSON), Error, Warnings, Images}; `ToText()` is what the model reads. `FNameTBDAIChangeSet` {CreatedAssets, TouchedPackages, Lines}: Discard deletes the created assets, Apply saves the packages, the lines fill the change card. `SetLastAsset / GetLastAsset`: "the one just made" - every tool that takes a blueprint / animation treats an omitted name as it (then the most recently used Widget Blueprint editor).
+-- **JSON <-> properties (`NameTBDAIJson`)** - what makes the tools generic: loose names (case / spaces / underscores / a bool's b / display names / a unique prefix or substring: "Typeface" -> TypefaceFontName), paths as keys ("Fill.Color", "ValueKeys.Keys[1].Value", "LayoutData.Anchors"), "List+" appends (a list appends each item), colors "#RRGGBB[AA]" (sRGB) / [r,g,b,a] (linear) / names, numeric structs from arrays in field order ([x,y], margins [h,v]), FSlateColor, FSlateBrush from a texture/material path, enums by name / display name / the part after "_" (HAlign_Center = Center), classes by short name or Blueprint path, soft refs, instanced objects {"$class"}, instanced structs {"$type"} (BaseStruct respected), property bags by their fields, maps, else ImportText. ClampMin/Max honoured. `ApplyToObject` = Modify + PreEditChange + write + PostEditChangeProperty per top-level field, asset/class fields first (a Niagara System lays out User Parameters before they're written). Reading: `ReadObjectNonDefault` / `ReadNonDefault` - editable fields that differ from the class defaults / struct defaults, compact (colors as hex, vectors as arrays, at most 24 list items, 60 fields).
++- **JSON <-> properties (`NameTBDAIJson`)** - what makes the tools generic: loose names (case / spaces / underscores / a bool's b / display names / a unique prefix or substring: "Typeface" -> TypefaceFontName; exact matches ranked whatever the field order - own name, then display name, then a bool without its b - so a shape's "Fill" is the Fill paint, not bFill whose display name is also Fill), paths as keys ("Fill.Color", "ValueKeys.Keys[1].Value", "LayoutData.Anchors"), "List+" appends (a list appends each item), colors "#RRGGBB[AA]" (sRGB) / [r,g,b,a] (linear) / names, numeric structs from arrays in field order ([x,y], margins [h,v]), FSlateColor, FSlateBrush from a texture/material path, enums by name / display name / the part after "_" (HAlign_Center = Center), classes by short name or Blueprint path, soft refs, instanced objects {"$class"}, instanced structs {"$type"} (BaseStruct respected), property bags by their fields, maps, else ImportText. ClampMin/Max honoured. `ApplyToObject` = Modify + PreEditChange + write + PostEditChangeProperty per top-level field, asset/class fields first (a Niagara System lays out User Parameters before they're written). Reading: `ReadObjectNonDefault` / `ReadNonDefault` - editable fields that differ from the class defaults / struct defaults, compact (colors as hex, vectors as arrays, at most 24 list items, 60 fields).
+ - **Theme**: `UNameTBDAITheme` (data asset; dark + light palettes, type scale, spacing scale, radii, button motion, entrance timing, spring preset, card size); `Get()` = the settings' Theme or the class defaults (dark violet/teal). **Theme tokens** in any value, expanded by every write tool: "@surface", "@text~0.6" (alpha x 0.6), "@space.4", "@radius.large", "@type.title", "@font.strong", "@spring.Bouncy" (a whole `FWidgetSpringParams` from the built-in / project spring presets).
+ - **Tools (37 - `validate_material` added in v2; the three menu tools with the menu system, see MenuSystem.md):**
+   - Read (offered in Ask mode): `get_context` (open assets, focused Widget Blueprint, designer selection with settings, last built, Content Browser selection), `describe_widget_blueprint` (tree, optionally with settings), `describe_widget` (one widget + slot, or one field path), `list_options` (widget_classes, components, track_types, motion_recipes, spring_presets, track_presets, material_masters (v2: filter = one master with its graph), material_functions, material_nodes (v2: the catalog + macros; filter = one node in detail, "all" = every class), material_macros (v2), niagara_templates, theme, enum <name>, fields <class or struct>), `search_docs`, `get_docs`, `find_assets`, `get_asset`, `open_asset`.
+diff --git a/Docs/Design/InfoCards.md b/Docs/Design/InfoCards.md
+index 506c78f..9459baf 100644
+--- a/Docs/Design/InfoCards.md
++++ b/Docs/Design/InfoCards.md
+@@ -14,32 +14,41 @@
+ - **Nested presses:** `ShouldPressCloseCard`'s Outside Card and Outside Anchor And Card zones count a press on a card nested inside this one (`IsPointOverDescendantCard`) as inside - a submenu's item no longer closes the menu it came from.
+ - `ShouldReopenOnRepeatClick(Index)` (virtual, default false): a repeat click on the anchor while its card is up opens it again (where the click landed) instead of toggling it shut. The Context Menu Anchor says true.
+ - `UInfoCardWidget::MarkAsEmbedded()`: a card shown by something else (an engine tooltip) is treated as embedded - never positioned, registered or dismissed by the system.
++- **`FInfoCardPositioning`** (`InfoCardTypes.h`): an entry's Placement fields in one struct for widgets that build their cards (Position Mode, Icon Position, Fill Icon Padding, Icon Anchor Padding, Cursor Position, **From Keyboard** (side used when a To Cursor card is opened from a key), Viewport Position, Card Offset, Clamp To Viewport, Flip To Avoid Clipping (written as Custom), Clamp Padding, Avoid Overlapping Cards, **Follow Cursor** (To Cursor only; To Icon / To Viewport always update per tick, as entries default), Card Transform). `ApplyTo(Spec, bFromKeyboard)`, `FromSpec`, `MakeBeside(Side, Gap)` (To Icon, flip, clamp, overlap avoidance on). Used by the Tooltip Card Anchor, Context Menu Style (menus, row tooltips), Context Menu Anchor's Override Positioning, attached menus and submenus.
+ 
+ ## Tooltips
+-- **Tooltip Card Anchor** (`UTooltipCardAnchor`): wrap, type **Tooltip Text** (and optionally **Tooltip Title**), done. Everything else comes from **Tooltip Template** (an Info Card Data Asset; Template Card ID picks the entry, else its first), else Project Settings > Info Card > Tooltips > **Default Tooltip Template**, else the built-in tooltip (`MakeBuiltInTooltipSpec`: Card ID `Tooltip`, Highlight with the project's Highlight Delay preset, above the widget with 6 px, dismissed by any press, a 0.12 s fade mirrored as the exit, card class = Default Tooltip Card Class or Text Info Card). Advanced, each with an inline toggle: Position, Delay (seconds, Custom), Text Style. Empty text and title: the entry is kept but disabled. The generic anchor's source fields are hidden by `FInfoCardGeneratedAnchorDetails`; its own category comes first. Blueprint: `Set Tooltip Card Text`, `Get Tooltip Card Text / Title` (not `SetToolTipText`: UWidget's own UFUNCTION / property names collide case-insensitively).
++- **Tooltip Card Anchor** (`UTooltipCardAnchor`): wrap, type **Tooltip Text** (and optionally **Tooltip Title**), done. Everything else comes from **Tooltip Template** (an Info Card Data Asset; Template Card ID picks the entry, else its first), else Project Settings > Info Card > Tooltips > **Default Tooltip Template**, else the built-in tooltip (`MakeBuiltInTooltipSpec`: Card ID `Tooltip`, Highlight with the project's Highlight Delay preset, above the widget with 6 px, dismissed by any press, a 0.12 s fade mirrored as the exit, card class = Default Tooltip Card Class or Text Info Card). Advanced, each with an inline toggle: **Position** (`TooltipPositioning`, an `FInfoCardPositioning`: every placement field an Info Card entry has; default To Icon Up 6 px, the built-in's; while off it shows the template entry's placement, `FromSpec`), Delay (seconds, Custom), Text Style. The old side-only `TooltipPosition` loads into `TooltipPosition_DEPRECATED` (CoreRedirect) and `PostLoad` turns it into To Icon on that side, the rest from the anchor's own template entry (no loading) or the built-in. `SetKeepsOtherCardsOpen` (C++, not saved): Close Other Cards Scope forced to None (menu rows' tooltips). Empty text and title: the entry is kept but disabled. The generic anchor's source fields are hidden by `FInfoCardGeneratedAnchorDetails`; its own category comes first. Blueprint: `Set Tooltip Card Text`, `Get Tooltip Card Text / Title` (not `SetToolTipText`: UWidget's own UFUNCTION / property names collide case-insensitively).
+ - **Text Info Card** (`UInfoCardTextWidget`): a card with no Widget Blueprint - Border (`CardBackground`) > Size Box (`CardWidthBox`, Max Width) > Vertical Box > `TitleText` / `BodyText` (wrapping), built in `Initialize` only for the C++ class (a Widget Blueprint made from it owns its tree and is filled by those names). Style `FInfoCardTextStyle` (rounded box with outline, padding, max width, title / body fonts and colours, gap, justification); fonts are the engine's font asset (constructor helper). Reads `UInfoCardPayload_Text`, and `UInfoCardPayload_TextStyle` when present (a re-delivery without it goes back to the class's style).
+ - **Blueprint:** `UInfoCardAnchor::Set Card Text (Card ID, Title, Body)` - sets the card's text payload (adds one if missing), survives re-reading the Data Asset, shown by the designer card: a Widget Blueprint wrapping an anchor exposes a "Tooltip Text" variable and calls it from Pre Construct (the Blueprint way to make one-field anchors); `Clear Card Text`. `UInfoCardLibrary`: `Set Widget Tooltip Card` (the nearest Tooltip Card Anchor around the widget gets the text; else the widget's engine tooltip becomes an embedded Text Info Card), `Find Info Card Anchor Around`, `Find Tooltip Anchor Around` (walk up panels and out of User Widgets).
+ 
+ ## Right-click context menus
+ - **Data (`ContextMenu/ContextMenuTypes.h`):**
+   - `UContextMenuAsset` ("Context Menu"): Entries (top-down), Style, Shortcuts Work While Open. Entry IDs are filled from the label once it has one (`AssignMissingEntryIds`; on load even without text) and made unique (`Copy`, `Copy_1`); kept afterwards, since anchors' overrides point at them.
+-  - `FContextMenuEntry`: Entry Type (`EContextMenuEntryType`: Button, Submenu, Divider, Text Divider (`Header`), Spacer), Entry ID; Content (Label, Description = row tooltip, Left / Center / Right Icon (`FContextMenuIcon`: Image Source Texture 2D / SVG, optional tint), Right Text, Shortcut (`FInputChord`, shown as "Ctrl+C"), Text Divider text / alignment (left, centre, right) / Show Line (default on), spacer height); Action (Actions - **instanced `UButtonAction`s**, filled in place - Button Tag, Close Menu On Click, Submenu asset); State (Enabled, Check Type None / Check Box / Radio Button, Checked, Radio Group, Emphasis Normal / Destructive); Look (Row Button Preset). Fields show only for the types that use them; the editor groups them (Entry ungrouped, then Content, Action, State, Look).
+-  - `FContextMenuStyle` in `UContextMenuStyleAsset` ("Context Menu Style"): panel (brush, padding, min / max width, max height then scroll), rows (**Row Button Preset**, row height / padding, native highlight / pressed brushes, icon size, part gap, always reserve the icon column), text (label font, normal / highlighted / disabled / destructive colours, shortcut font / colour), icons (tints per state, submenu arrow, check mark, radio mark; unset: text glyphs ›, ✓, ●), dividers (colour, thickness, padding, text divider font / colour / padding, uppercase), behaviour (submenu delay, close other cards on open, type to select, wrap navigation, Open Animations - an `FInfoCardAdditiveAnimations`, default a mirrored fade + 0.96 grow - Menu Sounds), custom widgets (Menu / Entry / Divider Widget Class). Resolve order: anchor Style Override > menu asset Style > Project Settings > Info Card > Context Menus > **Default Context Menu Style** > built-in (the style asset CDO).
++  - `FContextMenuEntry`: Entry Type (`EContextMenuEntryType`: Button, Submenu, Divider, Text Divider (`Header`), Spacer), Entry ID; Content (Label = the left text, Description = row tooltip, **Left / Center / Right Icons** (`TArray<FContextMenuIcon>`: Image Source Texture 2D / SVG, optional tint; unset elements skipped), **Center Text**, Right Text - one text per alignment - Text Divider text / **Text Alignment** (`EContextMenuTextDividerAlignment`: Style Default, Left, Center, Right) / Show Line (default on), spacer height); **Shortcut** (Shortcut `FInputChord`, **More Shortcuts**, **Gamepad Shortcut** (`FKey`), **Shortcut Input Action** (`UInputAction`: its keyboard and gamepad keys from the Menu Input Subsystem, rebinding included), **Shortcut Display** (`EContextMenuEntryBindingDisplay`: Style Default / Text / Image)); Action (Actions - **instanced `UButtonAction`s**, filled in place - Button Tag, Close Menu On Click, Submenu asset); **Attached Menu** (Button rows: Attached Menu asset, Style (empty: the parent's), Open On `EContextMenuAttachedMenuTrigger` Hover / Press, Positioning (`FInfoCardPositioning`, default `MakeBeside(Right, 4)`)); State (Enabled, Check Type None / Check Box / Radio Button, Checked, Radio Group, Emphasis Normal / Destructive); Look (Row Button Preset). Fields show only for the types that use them; the editor groups them (Entry ungrouped, then Content, Shortcut, Action, Attached Menu, State, Look).
++  - Migration (`FContextMenuEntry::PostSerialize`, loading only): the old single `LeftIcon` / `CenterIcon` / `RightIcon` and `HeaderAlignment` load into `..._DEPRECATED` fields (CoreRedirects in `Config/DefaultNameTBD.ini`, editor-only data); a set icon becomes the list's first element, a non-Left alignment becomes the entry's own Center / Right (Fill: Left), Left stays Style Default (the style's default is Left).
++  - `FContextMenuStyle` in `UContextMenuStyleAsset` ("Context Menu Style"): panel (brush, padding, min / max width, max height then scroll), rows (**Row Button Preset**, row height, row padding (highlight to parts), **Highlight Inset** (`RowHighlightInset`, the menu's slot padding for button / submenu rows, default 0), **Content Horizontal / Vertical Alignment** (default Fill / Center), native highlight / pressed brushes, icon size, part gap, always reserve the icon column, **Row Tooltips**), text (label font, normal / highlighted / disabled / destructive colours, shortcut font / colour, **Label / Center Text / Right Text / Shortcut Alignment** - `FContextMenuTextAlignment`: Justification, Horizontal, Vertical; defaults Left+Fill, Center+Center, Right+Right, Right+Right), **Bindings** (`FContextMenuBindingStyle`), icons (tints per state, **Icon Gap** (4) and **Icon Delimiter** (text, empty) between a list's icons, submenu arrow, check mark, radio mark; unset: text glyphs ›, ✓, ●), dividers (colour, thickness, padding, text divider font / colour / padding, uppercase, **Text Divider Alignment** - the default for entries left at Style Default), **Positioning** (`FInfoCardPositioning`, default To Cursor Down Right (2, 2), not following, clamp + flip, no overlap avoidance, From Keyboard Down - what every menu in the style does), behaviour (submenu delay, close other cards on open, type to select, wrap navigation, Open Animations - an `FInfoCardAdditiveAnimations`, default a mirrored fade + 0.96 grow - Menu Sounds), custom widgets (Menu / Entry / Divider Widget Class). No EditConditions on `FContextMenuStyle`'s own fields (it is shown with ShowOnlyInnerProperties); conditions live in the nested structs. Resolve order: anchor Style Override > menu asset Style > Project Settings > Info Card > Context Menus > **Default Context Menu Style** > built-in (the style asset CDO).
++  - **Bindings** (`FContextMenuBindingStyle`): Display Text / **Image** (each key's art from Project Settings > Menus > **Key Glyph Sets** through `UMenuInputSubsystem::GetKeyGlyph` - the player's device family; with no local player (designer) the project's sets directly, keyboard set or the Default Gamepad Family's - so nobody picks images per row; a key without art shows its name), Key Delimiter (`+`), Binding Separator (`, `), Key Gap, **Frame** None / Each Key (delimiters outside) / Whole Binding (delimiters inside) with Frame Brush (rounded outline) and Frame Padding, font override, Glyph Height, Max Bindings, Gamepad Bindings Only On Gamepad (on), Hide Keyboard Bindings On Gamepad (off). Key names: Ctrl / Shift / Alt / Cmd, gamepad keys by family (`MenuInputUtils::GetKeyLabel`), else the short display name; chords written Ctrl, Shift, Alt, Cmd, key.
++  - **Row Tooltips** (`FContextMenuTooltipStyle`): Mode Engine Tooltip (default: the old plain tooltip) / **Tooltip Card**: a `UTooltipCardAnchor` (`TooltipAnchor`) around the row's button with Tooltip Template + Template Card ID, Override Text Style + Text Style (`FInfoCardTextStyle`, real font assets on the style asset CDO), Override Delay + Delay (on, 0.6 s), Override Positioning + Positioning (on; To Cursor Down Right (12, 20) with overlap avoidance, clear of a submenu). The tooltip anchor keeps other cards open.
++  - `FContextMenuEntryOverride`: Entry ID (the title), **Remove** (shown as a check box beside the Entry ID by `FContextMenuEntryOverrideCustomization`; the other rows get `IsEnabled(!Remove)`), Enabled / Label / Checked each with its inline override toggle - their EditConditions name the toggle alone (an inline toggle only appears for a single-bool EditCondition: the old `bOverrideX && !bRemove` hid the toggles and left the fields greyed out for good). Enabled off greys the row out; it isn't removed.
+   - `UInfoCardPayload_ContextMenu` ("Info Card Data (Context Menu)"): Menu, Style Override, Entry Overrides, Extra Entries, runtime states (from the anchor), the anchor (weak), focus-first flag. `BuildEntries`: asset entries, overrides (remove, enabled, label, checked), extra entries inserted (start, end, before / after an ID), runtime states, removed rows dropped, then stray dividers (first, last, doubled) tidied. Any Info Card entry whose Card Class is a Context Menu Widget can carry one; the old tag-list payload (`UContextMenuPayload`, "Tag Payload") is also read, a row per tag that has Button Actions data.
+ - **Menu (`UContextMenuWidget : UInfoCardWidget`):** native frame (Border `MenuPanel` > Size Box `MenuSizeBox` > Scroll Box `MenuScroll` > Vertical Box `EntriesBox`; a Widget Blueprint made from it fills those names). Applies the style's Open Animations / Menu Sounds once when the entry brought none. `BuildRows`: per entry, actions duplicated with the menu as outer (each open menu has its own instances, with a world), a Button Tag's actions instantiated and its text / icons used where the entry has none, then `Is Action Visible` / `Is Action Enabled` (runtime only) hide / grey rows; one row widget each. Keyboard / gamepad: Up / Down (wrapping, skipping what can't be chosen), Home / End, Right opens a submenu (focused), Left / Escape / B close a submenu level and refocus its row (Escape closes the root), Enter / A via the row's button, the entry's shortcut while open, type-to-select by first letter (cycling). Focus: the first row for keyboard openings, else the menu itself (next tick); on close, focus goes back to the anchor's content if the menu still had it. `HandleEntryChosen`: checks first (check box flips, radio clears its group in this menu; remembered on the anchor), inline actions get the whole context (`FContextMenuActionContext`: Entry ID, menu, button, anchor, source widget, all action payloads), tag actions get exactly their expected payloads index for index, then `OnEntryChosen` and the anchor's `On Menu Entry Clicked`, then the whole chain closes if Close Menu On Click.
+-- **Rows (`UContextMenuEntryWidget`):** button rows are a **Context Menu Button** (`RowButton`) > Border `RowHighlight` > Size Box `RowSize` > Horizontal Box of parts: icon column (`LeftIcon` or `CheckMark`), `CenterIcon`, `LabelText` (fill, ellipsis), `RightText`, `ShortcutText`, `RightIcon`, `SubmenuArrow`. The button never closes a card or toggles an enabled state itself; a Row Button Preset (style's, or the entry's) is applied with `ApplyButtonPreset`, and then the native highlight is off. Dividers: Border `DividerInset` > Horizontal Box with `DividerLine` (and `HeaderText` for text dividers, lines before / after by alignment). Hover moves keyboard focus to the row (only after the cursor moved), so one row is highlighted. A Widget Blueprint row fills the same names; `On Menu Entry Set`, `On Highlight Changed`. **Submenus:** the row's button sits in an Info Card Anchor (`SubmenuAnchor`, Custom source, focus triggering off) with one Highlight entry (`Submenu`): the style's Submenu Delay, Keep Open Until Cursor Leaves, To Icon Right (padding = panel padding), flip on, Close Other Cards Scope Same Source Widget Class, the parent's style and anchor, the parent card's action payloads. Runtime entry states are read live from the root anchor, so they reach submenus.
+-- **Context Menu Anchor (`UContextMenuAnchor`):** Menu, Open With (Right Click, Left Click, Right Or Left Click, Only From Blueprint), Placement (At Cursor - keyboard openings go below the widget - Below Widget, Right Of Widget), Style Override, **Entry Overrides** (synced from the menu by ID, `EditFixedSize`, unset rows show the asset's values), **Extra Entries**, **Action Payloads** (instanced, duplicated per spec). Generated spec(s): `ContextMenu` (+ `ContextMenuLeft` for Any Click), To Cursor Down Right (2,2) without per-tick updates, clamp + flip, Outside Card, Close Others All Cards (style), no overlap avoidance, Z 1500. Events: **On Menu Entry Clicked (Entry ID, Is Checked)**, **On Context Menu Opening** (before rows are built). API: Open / Close Context Menu, Is Context Menu Open, Get Open Context Menu, Set Context Menu, Set Action Payloads, Set Entry Enabled / Hidden / Label / Checked, Is Entry Checked, Clear Entry Changes (open menus rebuild next tick). Left Click on a wrapped button: the anchor listens to the button's press / click (a press while open closes; a click opens).
++- **Rows (`UContextMenuEntryWidget`):** button rows are [`SubmenuAnchor` >] [`TooltipAnchor` >] a **Context Menu Button** (`RowButton`) > Border `RowHighlight` > Size Box `RowSize` > Horizontal Box of parts: icon column (Size Box `LeftIconColumn`, as wide as `GetIconColumnWidth(style, N)` for the menu's widest row - N = most left icons, a check mark counting one, at least one with Always Reserve - so labels line up and all move along together, JetBrains-style; holding `CheckMark` or the `LeftIcon`, `LeftIcon_1`... list with Icon Gap / Icon Delimiter, the delimiter width measured with the font measure service), center icons, `LabelText` (ellipsis), `CenterText` + Spacer `CenterTextBalance` (the label and the spacer split the room, so Center Text is centred between the label's start and the right-hand parts; Center Text Alignment Left: right after the label, Right: just before Right Text), `RightText`, `ShortcutText` / `BindingsBox`, right icons, `SubmenuArrow` (submenus and rows with an attached menu). **Fill fix:** `UButtonSlot` defaults to centre / centre, so the highlight had shrunk to the label; native rows set the button's parts slot (`GetPartsSlot()`: the content slot or the one kept for hidden parts) to Fill / Fill, padding 0, in `FillParts` after `ApplyButtonPreset` (which copies button properties only, never slots). Content alignment goes on `RowHighlight`'s content, text alignment on each text and its slot - native rows only (`bBuiltNativeTree`); a Widget Blueprint row keeps its own slots and justification. The highlight is inset from the panel edge by Panel Padding (+ Highlight Inset) and the label from the highlight by Row Padding. Shortcuts: `GatherBindings` (display: device rules, Max Bindings; matching: all) -> plain text in `ShortcutText` when Text, no frame, no gap; otherwise built into `BindingsBox` (separators, Whole Binding frames, keys as art or text, Each Key frames, delimiters), coloured with the shortcut colours (art keeps its glyph tint, faded when disabled). While open, `MatchesShortcut` chooses a row by any of its bindings. The button never closes a card or toggles an enabled state itself; a Row Button Preset (style's, or the entry's) is applied with `ApplyButtonPreset`, and then the native highlight is off. Dividers: Border `DividerInset` > Horizontal Box with `DividerLine` (and `HeaderText` for text dividers, lines before / after by alignment). Hover moves keyboard focus to the row (only after the cursor moved), so one row is highlighted. A Widget Blueprint row fills the same names; `On Menu Entry Set`, `On Highlight Changed`. **Submenus and attached menus:** the row sits in an Info Card Anchor (`SubmenuAnchor`, Custom source, focus triggering off) with one Highlight entry (`Submenu`): the style's Submenu Delay, Keep Open Until Cursor Leaves, Close Other Cards Scope Same Source Widget Class, the parent's anchor and action payloads. A submenu: `MakeBeside(Right, panel padding)`, the parent's style. An attached menu (Button rows): its own Positioning and Style (else the parent's; menu class from that style), hover triggering only for Open On Hover; Open On Press opens it from `HandleEntryChosen` after the actions and events, and the menu stays open. Right opens either. Runtime entry states are read live from the root anchor, so they reach submenus.
++- **Context Menu Anchor (`UContextMenuAnchor`):** Menu, Open With (Right Click, Left Click, Right Or Left Click, Only From Blueprint), Style Override, **Override Positioning** (inline toggle + `FInfoCardPositioning`; off: the style's Positioning, shown read-only - synced at design time), **Entry Overrides** (synced from the menu by ID, `EditFixedSize`, unset rows show the asset's values), **Extra Entries**, **Action Payloads** (instanced, duplicated per spec). The old **Placement** field is gone: it loads into `Placement_DEPRECATED` (CoreRedirect) and `PostLoad` turns Below Widget / Right Of Widget into Override Positioning (To Icon Down / Right, 2 px); At Cursor is the style default. Generated spec(s): `ContextMenu` (+ `ContextMenuLeft` for Any Click), positioning applied with `ApplyTo(Spec, bOpeningFromKeyboard)`, Outside Card, Close Others All Cards (style), Z 1500. `GetEffectivePositioning()`. Events: **On Menu Entry Clicked (Entry ID, Is Checked)**, **On Context Menu Opening** (before rows are built). API: Open / Close Context Menu, Is Context Menu Open, Get Open Context Menu, Set Context Menu, Set Action Payloads, Set Entry Enabled / Hidden / Label / Checked, Is Entry Checked, Clear Entry Changes (open menus rebuild next tick). Left Click on a wrapped button: the anchor listens to the button's press / click (a press while open closes; a click opens).
+ - **Button Actions (`Buttons/Actions/`):** `UButtonAction` gained `Execute Menu Action (Context)` (default calls Execute Action with the button and payloads), `Is Action Visible` / `Is Action Enabled`, `Find Action Payload`. Built-in actions (`CommonButtonActions.h`): Run Console Command, Copy Text (or the first Context Button Payload (Text)), Call Function (by name on the source widget / owning player / pawn; no parameters or one Name = Entry ID; problems logged), Open URL, Play Sound.
+ - **Button Tag label fix:** `UContextMenuButton::ApplyButtonData` worked out the tag's Button Text and never wrote it; it now goes through `ApplyButtonTextFromData` (blank never overwrites authored text).
+ 
+ > **Standing expectation (the user's own words):** "There could be more use cases that users desire that I haven't thought of, but would be expected in a production-grade application."
+ 
+ - **Asked:** Info Card Anchor - designer preview not working; no Card ID row in Payload Defaults (it is the title); the payload's type as text, not a dropdown; the Preview category and its Mode removed; Additive Animations streamlined: Animations field gone, the Use Basic Animations pattern; a simple anchor for tooltips (wrap and type the text), doable from Blueprint; the Data Asset's fields organised. A right-click menu built on info cards and Context Menu Buttons: an asset with buttons top-down, actions, left / centre / right icons (key binds), dividers and text dividers (left / centre / right, optional line, on by default), per-widget add / remove overrides, design defaults that menus pick up and can change, AAA-level design; button actions easier.
++- **Asked (context menu fixes):** native rows fill the menu's width (button slot centred); style options for row content alignment, label / right text / shortcut justification and alignment, a style default for Text Divider alignment combined with the entry's, a highlight inset; multiple icons per side with delimiter and gap in the style; left / center / right texts; Entry Overrides' Remove as a check box beside the Entry ID, fields greyed by it, Enabled disabling (not removing), the greyed-out fields bug; menus attached to Button rows (menu, style, hover / press, positioning defaulting to beside the row); positioning in the style (as the Info Card Anchor's), overridable on the anchor, Placement removed; JetBrains-style label alignment with icons; shortcuts shown as text or images from one central place, multiple bindings, binding delimiter (+), font and frames around each key or the whole binding; row tooltips styled in the Context Menu Style; the tooltip with the Info Card Anchor's positioning. AI tools: "Fill" resolved to bFill.
++- **Beyond the request (context menu fixes):** gamepad shortcuts and Enhanced Input actions as bindings (shown by device, the player's rebinding, working while open), More Shortcuts working while open, Max Bindings, binding separator, key art keeping proportions and its glyph tint, a font override for keys, Center Text placement options, From Keyboard side for To Cursor menus, Follow Cursor, Card Transform and Avoid Overlapping Cards per menu, the Tooltip Card Anchor's Position widened to the same fields (migrated), row tooltips that never close their menu and stay clear of submenus, Right opening attached menus, multiple icons from a Button Tag's icon lists, Widget Blueprint rows filling `LeftIcon_1...`, `CenterText`, `BindingsBox`, `TooltipAnchor`, old data migrated (icons, Text Divider alignment, Placement, tooltip side).
+ - **Beyond the request:** the designer shows the real card (text, transform, placement) and the toolbar plays its entrance / exit and picks the card; Highlight-only fields hidden for other card types; Settings Overrides grouped and flattened, their Card ID rows hidden too; Text Info Card (no Widget Blueprint needed) with a style and a style payload; project-wide tooltip template and card class; Set Card Text for any anchor; Set Widget Tooltip Card / Find ... Anchor Around; menus: submenus (hover delay, click, Right / Left), check box and radio rows, destructive emphasis, descriptions as tooltips, shortcuts that work while open, type-to-select, wrapping keyboard / gamepad navigation, Home / End, Escape per level, focus returned on close, icon column alignment across rows, dividers tidied after removals, row presets per style and per entry, custom menu / row / divider widget classes, Is Action Visible / Enabled checks, Execute Menu Action with full context, five built-in actions, events with the Entry ID (wire a menu with one event), On Context Menu Opening, runtime Set Entry Enabled / Hidden / Label / Checked with remembered checks, Left Click / Any Click / Blueprint-only opening, three placements, reopen at the new click, the old tag-list payload readable by the new menu, presses inside a submenu no longer close its menu, the Button Tag label fix.
++- **Decisions made without asking (context menu fixes):** Remove keeps its meaning (ticked = left out) and sits beside the ID with a "Remove" label; checkable rows still show the check mark instead of left icons; Center Text uses the label font and colours; the row tooltip default stays the engine tooltip (new fields keep the old behaviour) - Tooltip Card is one switch away; the Text Divider's entry choice is an enum with Style Default rather than an override flag; Text-mode shortcuts with no frame or gap stay one text block (Ctrl+C as before, now written Ctrl, Shift, Alt, Cmd); positioning structs live in `InfoCardTypes.h` as `FInfoCardPositioning` so tooltips, menus and anchors share them; key art comes from the Menu system's Key Glyph Sets (no second registry); the highlight inset is the menu's slot padding for button rows (it insets a Row Button Preset's button too).
+ - **Decisions made without asking:** see the final report of the change set (kept here in short): the toolbar (not the Details) drives preview playback, as for buttons; Preview Card stays the saved default and starts None; the Data Asset fallback is per whole additive set; when a migrated set had both a shared list and basic entries, the Widget Animation assets win (basic kept, switch back to restore); submenus open centred on their row (To Icon Right); Escape closes one level; inline actions get every action payload, tag actions their expected ones; menus close every other card when they open (style toggle).
+-- **Still open:** submenus top-aligned to their row (needs a placement option the card doesn't have); shortcuts that work while the menu is closed (global bindings, Enhanced Input); key glyphs (Key Glyph Sets) for shortcuts; opening a menu with no anchor (a world right-click at a screen point); gamepad "menu" button to open from a focused anchor without Blueprint; typeahead of whole words; a drop shadow on the native panel (Drop Shadow component); wrapping an existing widget in an anchor at runtime (`Set Widget Tooltip Card` uses the engine tooltip instead); rich text in Text Info Card; AI-facing docs (`Resources/AI/Docs`) for cards and menus; sample assets (a style, a menu, a tooltip template).
++- **Still open:** submenus top-aligned to their row (needs a placement option the card doesn't have); a submenu positioning option in the style (right-to-left menus open left); bindings follow the device at opening (a device switch while open doesn't redraw them); Enhanced Input chords (modifier triggers) shown as one key; the Text Divider and icon options for Widget Blueprint rows' own layout; a row tooltip and a submenu can both be up on a submenu row; shortcuts that work while the menu is closed (global bindings); opening a menu with no anchor (a world right-click at a screen point); gamepad "menu" button to open from a focused anchor without Blueprint; typeahead of whole words; a drop shadow on the native panel (Drop Shadow component); wrapping an existing widget in an anchor at runtime (`Set Widget Tooltip Card` uses the engine tooltip instead); rich text in Text Info Card; AI-facing docs (`Resources/AI/Docs`) for cards and menus; sample assets (a style, a menu, a tooltip template).
+ 
+ ## Unverified
++- Context menu fixes (not compiled, not seen running): the Fill fix on `GetPartsSlot()`; `USizeBox::SetContent` returning a `USizeBoxSlot`; `FSlateFontMeasure::Measure` for the icon delimiter at design time; `UImage::SetBrushResourceObject` / `SetDesiredSizeOverride` for key art; `FInputChord`'s `bCtrl` / `bShift` / `bAlt` / `bCmd`; `UPanelWidget::ClearChildren` on a Widget Blueprint row's `BindingsBox`; `EditCondition = "AttachedMenu != nullptr"`; `IDetailPropertyRow::IsEnabled` greying an inline toggle with its field; the CoreRedirects into `_DEPRECATED` struct members (`ContextMenuEntry.LeftIcon` ...) and `PostSerialize` running for entries inside the menu asset, extra entries and payloads; a Tooltip Card Anchor built in code inside a menu row (its cards generated by `SetTooltipCardText` before the Slate widget exists); a press-opened attached menu's hover keep-open.
+ - Nothing here has been compiled: no engine in the cloud container. Expect small API fixes on first build, in particular: `TSlotlessChildren` add / remove and `FGeometry::MakeChild` in `SInfoCardDesignerPreview`; `IDetailGroup::ToggleExpansion` and `GetChildHandle(Name, bRecurse)` reaching an instanced payload's fields; `FInputChord` equality / `GetInputText(false)`; `UTextBlock::SetTextOverflowPolicy`; `UWidget::GetDefaultFontName` in constructor helpers; `UUserWidget::SetIsFocusable` in a constructor.
+ - Designer card: that the UMG designer is happy with a design-time card created by an anchor (owner = the preview User Widget) and arranged outside the anchor's box; that it isn't clipped by the designer's surface; hit-test-invisible so selection still works.
+ - Glyph fallbacks (✓, ●, ›) render in the engine's default font.
+@@ -48,6 +57,14 @@
+ - Hover-moves-focus doesn't fight other anchors' focus triggers.
+ 
+ ## Check by hand
++- CM_TestMenu / CMS_DarkSimple from WBP_AnchorTest (`/NameTBD/NameTBD/AI/`): every native row's highlight spans the panel less Panel Padding (6 px), labels start Row Padding (10 px) inside, shortcuts right-aligned in a column; the same for submenu rows, rows with a Row Button Preset, and unchanged for a custom Entry Widget Class. Highlight Inset and Content Horizontal Alignment move them.
++- Give rows 0, 1 and 2 left icons: every label starts at the same x and moves right for all rows when one gains an icon; Icon Delimiter "|" appears between icons. Center Text sits mid-row; Right Text right.
++- Old assets: a Text Divider that was Center stays centred (now its own Center); old single icons appear as the first list element; an anchor that was Below Widget opens below (Override Positioning on). A Tooltip Card Anchor whose Position was Down still shows below.
++- Entry Overrides: the Remove check box is beside the ID; ticking it greys Enabled / Label / Checked; their own toggles can be ticked again (the old greyed-out bug).
++- Shortcuts: Image with a keyboard Key Glyph Set shows Ctrl + C art; Frame Each Key / Whole Binding; More Shortcuts and a Gamepad Shortcut (with a gamepad in use) show and work while open; an Input Action shows the player's rebound key.
++- Attached Menu on a Button row: hover opens it beside the row; Open On Press runs the row and opens it, the menu stays; Escape / Left close it back to the row.
++- Row Tooltips set to Tooltip Card: the Description shows as a Text Info Card below-right of the cursor, styled by the style's Text Style, and the menu stays open.
++- AI: set_widget / set_shape_paint with "Fill" on a Rectangle Shape sets the Fill paint; "bFill" still sets the bool.
+ - An anchor with a Data Asset: Payload Defaults rows read "Card ID - payload type" with the payload's fields under them; the Data Asset entry is grouped; Additive Animations shows Use Basic Animations; old assets with shared Animations load with the switch off and the entries in Anim In.
+ - Set Preview Card on an anchor: the card appears beside it in the designer with its text; select the anchor, toolbar In / Out play it; Card picker switches cards; nothing is saved by the toolbar.
+ - Drop a Tooltip Card Anchor around a button, type text, PIE: tooltip above after the delay, fades, hides on click. Set a Default Tooltip Template in Project Settings: every tooltip follows it.
+diff --git a/Plugins/NameTBD/Config/DefaultNameTBD.ini b/Plugins/NameTBD/Config/DefaultNameTBD.ini
+index 026aac1..f698a5c 100644
+--- a/Plugins/NameTBD/Config/DefaultNameTBD.ini
++++ b/Plugins/NameTBD/Config/DefaultNameTBD.ini
+@@ -32,3 +32,9 @@
+ +PropertyRedirects=(OldName="/Script/NameTBD.WidgetPathLayer.DefaultNodeState",NewName="/Script/NameTBD.WidgetPathLayer.DefaultCustomState")
+ +PropertyRedirects=(OldName="/Script/NameTBD.WidgetPathLayer.UnlockedState",NewName="/Script/NameTBD.WidgetPathLayer.UnlockedCustomState")
+ +PropertyRedirects=(OldName="/Script/NameTBD.WidgetPathLayer.AvailableState",NewName="/Script/NameTBD.WidgetPathLayer.AvailableCustomState")
+++PropertyRedirects=(OldName="/Script/NameTBD.ContextMenuEntry.LeftIcon",NewName="/Script/NameTBD.ContextMenuEntry.LeftIcon_DEPRECATED")
+++PropertyRedirects=(OldName="/Script/NameTBD.ContextMenuEntry.CenterIcon",NewName="/Script/NameTBD.ContextMenuEntry.CenterIcon_DEPRECATED")
+++PropertyRedirects=(OldName="/Script/NameTBD.ContextMenuEntry.RightIcon",NewName="/Script/NameTBD.ContextMenuEntry.RightIcon_DEPRECATED")
+++PropertyRedirects=(OldName="/Script/NameTBD.ContextMenuEntry.HeaderAlignment",NewName="/Script/NameTBD.ContextMenuEntry.HeaderAlignment_DEPRECATED")
+++PropertyRedirects=(OldName="/Script/NameTBD.ContextMenuAnchor.Placement",NewName="/Script/NameTBD.ContextMenuAnchor.Placement_DEPRECATED")
+++PropertyRedirects=(OldName="/Script/NameTBD.TooltipCardAnchor.TooltipPosition",NewName="/Script/NameTBD.TooltipCardAnchor.TooltipPosition_DEPRECATED")
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuAnchor.cpp b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuAnchor.cpp
+index 4de9877..b05882e 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuAnchor.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuAnchor.cpp
+@@ -19,6 +19,12 @@ void UContextMenuAnchor::SynchronizeProperties()
+ 	if (IsDesignTime() && !HasAnyFlags(RF_ClassDefaultObject))
+ 	{
+ 		SyncEntryOverridesFromMenu();
++
++		// An override not switched on shows the style's positioning, so switching it on starts from there.
++		if (!bOverridePositioning)
++		{
++			Positioning = UContextMenuStyleAsset::Resolve(StyleOverride, Menu).Positioning;
++		}
+ 	}
+ #endif
+ 
+@@ -96,29 +102,12 @@ bool UContextMenuAnchor::BuildGeneratedInfoCards(TArray<FInfoCardSpec>& OutSpecs
+ 			Spec.bTriggerOnFocus = false;
+ 		}
+ 
+-		const bool bAtCursor = Placement == EContextMenuPlacement::AtCursor && !bOpeningFromKeyboard;
+-		if (bAtCursor)
+-		{
+-			// Where the click landed, and staying there: a menu doesn't follow the cursor.
+-			Spec.PositionMode = EInfoCardPosition::ToCursor;
+-			Spec.CursorPosition = EInfoCardCursorPosition::DownRight;
+-			Spec.CardOffset = FVector2D(2.f, 2.f);
+-			Spec.bUpdatePositionOnTick = false;
+-		}
+-		else
+-		{
+-			Spec.PositionMode = EInfoCardPosition::ToIcon;
+-			Spec.IconPosition = Placement == EContextMenuPlacement::RightOfWidget ? EDirection2D::Right : EDirection2D::Down;
+-			Spec.IconAnchorPadding = 2.f;
+-		}
++		// The style's positioning (default: where the click landed, staying there), or this anchor's own. A keyboard
++		// opening of a To Cursor menu goes beside the widget.
++		(bOverridePositioning ? Positioning : MenuLook.Positioning).ApplyTo(Spec, bOpeningFromKeyboard);
+ 
+-		Spec.bClampToViewport = true;
+-		Spec.FlipToAvoidClipping.Source = EInfoCardValueSource::Custom;
+-		Spec.FlipToAvoidClipping.CustomValue = true;
+ 		Spec.RemoveCardOnPressing = ECardRemoveOnPressZone::OutsideCard;
+ 		Spec.CloseOtherCardsScope = MenuLook.bCloseOtherCardsOnOpen ? ECardCloseOthersScope::AllCards : ECardCloseOthersScope::None;
+-		// A menu stays where it opened; a tooltip elsewhere on screen is no reason to move it.
+-		Spec.bAvoidOverlappingCards = false;
+ 		Spec.ZOrder = 1500;
+ 
+ 		Spec.Payloads.Add(MenuData);
+@@ -150,6 +139,30 @@ bool UContextMenuAnchor::BuildGeneratedInfoCards(TArray<FInfoCardSpec>& OutSpecs
+ 	return true;
+ }
+ 
++const FInfoCardPositioning& UContextMenuAnchor::GetEffectivePositioning() const
++{
++	return bOverridePositioning ? Positioning : UContextMenuStyleAsset::Resolve(StyleOverride, Menu).Positioning;
++}
++
++void UContextMenuAnchor::PostLoad()
++{
++	Super::PostLoad();
++
++#if WITH_EDITORONLY_DATA
++	// Below Widget / Right Of Widget were the anchor's own choice: they become its Override Positioning. At Cursor was the
++	// default, which the style's default Positioning is.
++	if (Placement_DEPRECATED != EContextMenuPlacement::AtCursor && !bOverridePositioning)
++	{
++		bOverridePositioning = true;
++		Positioning = FInfoCardPositioning();
++		Positioning.PositionMode = EInfoCardPosition::ToIcon;
++		Positioning.IconPosition = Placement_DEPRECATED == EContextMenuPlacement::RightOfWidget ? EDirection2D::Right : EDirection2D::Down;
++		Positioning.IconAnchorPadding = 2.f;
++	}
++	Placement_DEPRECATED = EContextMenuPlacement::AtCursor;
++#endif
++}
++
+ void UContextMenuAnchor::HandleClickOpening()
+ {
+ 	OnContextMenuOpening.Broadcast();
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuAnchor.h b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuAnchor.h
+index 10086c6..9f5b1ed 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuAnchor.h
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuAnchor.h
+@@ -17,12 +17,12 @@ UENUM(BlueprintType)
+ enum class EContextMenuOpenTrigger : uint8
+ {
+ 	RightClick UMETA(DisplayName = "Right Click"),
+-	LeftClick UMETA(DisplayName = "Left Click", ToolTip = "A dropdown or an \"options\" button. Pair it with Placement Below Widget."),
++	LeftClick UMETA(DisplayName = "Left Click", ToolTip = "A dropdown or an \"options\" button. Pair it with Override Positioning: To Icon, Down."),
+ 	AnyClick UMETA(DisplayName = "Right Or Left Click"),
+ 	Manual UMETA(DisplayName = "Only From Blueprint", ToolTip = "Nothing opens it but Open Context Menu - from a gamepad button, a key, a long press.")
+ };
+ 
+-/** Where a Context Menu Anchor's menu opens. */
++/** Where a Context Menu Anchor's menu opened before positioning moved to the style (Positioning, Override Positioning). Kept to load old anchors. */
+ UENUM(BlueprintType)
+ enum class EContextMenuPlacement : uint8
+ {
+@@ -43,6 +43,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FContextMenuAnchorOpeningSignature);
+  *     checked.
+  *   - Extra Entries: rows only this widget's menu has, at the start, the end, or before / after a named entry.
+  *   - Style Override: another Context Menu Style for this widget's menu.
++ *   - Override Positioning: where this widget's menu opens, instead of its style's Positioning.
+  *   - Action Payloads: the data this widget's rows act on (the item in this slot), handed to every row's actions.
+  *
+  * When a row is chosen, its actions run and On Menu Entry Clicked fires with its Entry ID - so a menu can be wired up in the
+@@ -66,8 +67,15 @@ public:
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu", meta = (DisplayName = "Open With"))
+ 	EContextMenuOpenTrigger OpenWith = EContextMenuOpenTrigger::RightClick;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu")
+-	EContextMenuPlacement Placement = EContextMenuPlacement::AtCursor;
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu", meta = (InlineEditConditionToggle))
++	bool bOverridePositioning = false;
++
++	/**
++	 * Where this widget's menu opens, instead of its style's Positioning: beside the widget for a dropdown (To Icon, Down) or
++	 * a flyout (To Icon, Right), at the cursor, at a corner of the screen. Off: shows the style's.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu", meta = (DisplayName = "Override Positioning", EditCondition = "bOverridePositioning"))
++	FInfoCardPositioning Positioning;
+ 
+ 	/** This widget's menu in another Context Menu Style than the menu asset's. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu", meta = (DisplayName = "Style Override"))
+@@ -98,7 +106,7 @@ public:
+ 
+ 	/**
+ 	 * Opens the menu now, wherever the trigger would. bFocusFirstEntry: for a key or a gamepad - the first row is focused, and
+-	 * a menu placed At Cursor opens below the widget instead.
++	 * a menu positioned To Cursor opens beside the widget instead (Positioning > From Keyboard).
+ 	 */
+ 	UFUNCTION(BlueprintCallable, Category = "Context Menu")
+ 	void OpenContextMenu(bool bFocusFirstEntry = false);
+@@ -158,6 +166,11 @@ public:
+ 	/** Called by the menu once a row's actions have run. */
+ 	void NotifyMenuEntryChosen(FName EntryId, bool bNowChecked);
+ 
++	/** Where this anchor's menu opens: Override Positioning when on, else its style's. */
++	const FInfoCardPositioning& GetEffectivePositioning() const;
++
++	virtual void PostLoad() override;
++
+ 	/** The card IDs of the menu (Right Click, and Any Click's right) and of Any Click's left-click twin. */
+ 	static const FName ContextMenuCardId;
+ 	static const FName LeftClickContextMenuCardId;
+@@ -200,4 +213,11 @@ protected:
+ 	bool bOpeningFromKeyboard = false;
+ 
+ 	bool bOpenMenuRefreshQueued = false;
++
++#if WITH_EDITORONLY_DATA
++	// Where the menu opened before positioning moved to the style. Loaded from old anchors through CoreRedirects
++	// (Config/DefaultNameTBD.ini), turned into Override Positioning in PostLoad, never saved again (CPF_Deprecated).
++	UPROPERTY()
++	EContextMenuPlacement Placement_DEPRECATED = EContextMenuPlacement::AtCursor;
++#endif
+ };
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuTypes.cpp b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuTypes.cpp
+index 40b5135..a0f272e 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuTypes.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuTypes.cpp
+@@ -49,10 +49,72 @@ namespace ContextMenuTypesPrivate
+ 	}
+ }
+ 
++// =================================================================================================
++// Row tooltips, bindings
++// =================================================================================================
++
++FContextMenuTooltipStyle::FContextMenuTooltipStyle()
++{
++	// Below-right of the cursor, as desktop menus' item tips are: a submenu opening beside the row doesn't cover it.
++	Positioning.PositionMode = EInfoCardPosition::ToCursor;
++	Positioning.CursorPosition = EInfoCardCursorPosition::DownRight;
++	Positioning.CardOffset = FVector2D(12.f, 20.f);
++	Positioning.bAvoidOverlappingCards = true;
++}
++
++FContextMenuBindingStyle::FContextMenuBindingStyle()
++{
++	KeyDelimiter = INVTEXT("+");
++	BindingSeparator = INVTEXT(", ");
++	FrameBrush = ContextMenuTypesPrivate::MakeRoundedBrush(FLinearColor(1.f, 1.f, 1.f, 0.06f), 4.f, FLinearColor(1.f, 1.f, 1.f, 0.22f), 1.f);
++}
++
+ // =================================================================================================
+ // FContextMenuEntry
+ // =================================================================================================
+ 
++int32 FContextMenuEntry::CountLeftIcons() const
++{
++	int32 Count = 0;
++	for (const FContextMenuIcon& Icon : LeftIcons)
++	{
++		Count += Icon.IsSet() ? 1 : 0;
++	}
++	return Count;
++}
++
++void FContextMenuEntry::PostSerialize(const FArchive& Ar)
++{
++#if WITH_EDITORONLY_DATA
++	if (!Ar.IsLoading())
++	{
++		return;
++	}
++
++	// One icon per side became a list per side.
++	auto MoveIcon = [](FContextMenuIcon& Old, TArray<FContextMenuIcon>& Into)
++	{
++		if (Old.IsSet() && Into.IsEmpty())
++		{
++			Into.Add(Old);
++		}
++		Old = FContextMenuIcon();
++	};
++	MoveIcon(LeftIcon_DEPRECATED, LeftIcons);
++	MoveIcon(CenterIcon_DEPRECATED, CenterIcons);
++	MoveIcon(RightIcon_DEPRECATED, RightIcons);
++
++	// A Text Divider's own alignment (Left was the default, and reads the same as the style's default) became Style Default
++	// or a choice of its own. Fill always drew as Left.
++	if (HeaderAlignment_DEPRECATED != HAlign_Left && TextDividerAlignment == EContextMenuTextDividerAlignment::StyleDefault)
++	{
++		TextDividerAlignment = HeaderAlignment_DEPRECATED == HAlign_Center ? EContextMenuTextDividerAlignment::Center
++			: (HeaderAlignment_DEPRECATED == HAlign_Right ? EContextMenuTextDividerAlignment::Right : EContextMenuTextDividerAlignment::Left);
++	}
++	HeaderAlignment_DEPRECATED = HAlign_Left;
++#endif
++}
++
+ FString FContextMenuEntry::GetIdSourceText() const
+ {
+ 	switch (EntryType)
+@@ -119,6 +181,8 @@ void FContextMenuStyle::UseDefaultFontAssets()
+ 	LabelFont = ContextMenuTypesPrivate::MakeFontAsset(TEXT("Regular"), 10);
+ 	ShortcutFont = ContextMenuTypesPrivate::MakeFontAsset(TEXT("Regular"), 9);
+ 	HeaderFont = ContextMenuTypesPrivate::MakeFontAsset(TEXT("Bold"), 8);
++	RowTooltips.TextStyle.TitleFont = ContextMenuTypesPrivate::MakeFontAsset(TEXT("Bold"), 11);
++	RowTooltips.TextStyle.BodyFont = ContextMenuTypesPrivate::MakeFontAsset(TEXT("Regular"), 10);
+ }
+ 
+ UContextMenuStyleAsset::UContextMenuStyleAsset()
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuTypes.h b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuTypes.h
+index 9baffc2..5425e79 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuTypes.h
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuTypes.h
+@@ -6,12 +6,14 @@
+ #include "Engine/DataAsset.h"
+ #include "Fonts/SlateFontInfo.h"
+ #include "Framework/Commands/InputChord.h"
++#include "Framework/Text/TextLayout.h"
+ #include "GameplayTagContainer.h"
+ #include "Layout/Margin.h"
+ #include "Styling/SlateBrush.h"
+ #include "Styling/SlateColor.h"
+ #include "Types/SlateEnums.h"
+ 
++#include "NameTBD/Cards/InfoCardTextWidget.h"
+ #include "NameTBD/Cards/InfoCardTypes.h"
+ #include "NameTBD/Widgets/WidgetSVG.h"
+ 
+@@ -24,6 +26,8 @@ class UContextMenuEntryWidget;
+ class UContextMenuStyleAsset;
+ class UContextMenuWidget;
+ class UInfoCardAnchor;
++class UInfoCardDataAsset;
++class UInputAction;
+ class UTexture2D;
+ 
+ /** What one line of a context menu is. */
+@@ -64,6 +68,58 @@ enum class EContextMenuInsertPosition : uint8
+ 	BeforeEntry UMETA(DisplayName = "Before Entry")
+ };
+ 
++/** Where a Text Divider's text sits: the style's Text Divider Alignment, or this entry's own. */
++UENUM(BlueprintType)
++enum class EContextMenuTextDividerAlignment : uint8
++{
++	StyleDefault UMETA(DisplayName = "Style Default", ToolTip = "The style's Text Divider Alignment."),
++	Left,
++	Center,
++	Right
++};
++
++/** How a row's shortcuts are drawn. */
++UENUM(BlueprintType)
++enum class EContextMenuBindingDisplay : uint8
++{
++	Text UMETA(ToolTip = "Key names as text: Ctrl+Shift+T."),
++	Image UMETA(ToolTip = "Each key's art from Project Settings > Menus > Key Glyph Sets, for the device the player is using. A key with no art there shows its name.")
++};
++
++/** How one row draws its shortcuts: as the style says, or its own way. */
++UENUM(BlueprintType)
++enum class EContextMenuEntryBindingDisplay : uint8
++{
++	StyleDefault UMETA(DisplayName = "Style Default", ToolTip = "The style's Bindings > Display."),
++	Text UMETA(ToolTip = "Key names as text: Ctrl+Shift+T."),
++	Image UMETA(ToolTip = "Each key's art from Project Settings > Menus > Key Glyph Sets. A key with no art there shows its name.")
++};
++
++/** Where the frame (the style's Frame Brush) goes on a row's shortcuts. */
++UENUM(BlueprintType)
++enum class EContextMenuBindingFrame : uint8
++{
++	None UMETA(ToolTip = "No frame."),
++	EachKey UMETA(DisplayName = "Each Key", ToolTip = "A frame around every key. The delimiters between keys stay outside the frames: [Ctrl] + [C]."),
++	WholeBinding UMETA(DisplayName = "Whole Binding", ToolTip = "One frame around all the keys of a binding, delimiters inside: [Ctrl + C].")
++};
++
++/** How a row shows its Description when the cursor rests on it. */
++UENUM(BlueprintType)
++enum class EContextMenuTooltipMode : uint8
++{
++	EngineTooltip UMETA(DisplayName = "Engine Tooltip", ToolTip = "The engine's plain tooltip, following the cursor."),
++	TooltipCard UMETA(DisplayName = "Tooltip Card", ToolTip = "An info card tooltip (a Tooltip Card Anchor around the row): its template, text style, delay and positioning set here.")
++};
++
++/** What opens the menu attached to a Button row. */
++UENUM(BlueprintType)
++enum class EContextMenuAttachedMenuTrigger : uint8
++{
++	Hover UMETA(ToolTip = "The cursor resting on the row (after the style's Submenu Delay), or Right on the keyboard. Clicking the row still runs it and closes the menu as usual."),
++	Press UMETA(ToolTip = "Clicking the row (or Enter / a gamepad's confirm, or Right): its actions run, the attached menu opens beside it, and the menu the row is in stays open.")
++};
++
+ /** An icon on a menu row: a texture or an SVG (drawn sharp at the size it is shown). */
+ USTRUCT(BlueprintType)
+ struct NAMETBD_API FContextMenuIcon
+@@ -89,6 +145,140 @@ struct NAMETBD_API FContextMenuIcon
+ 	bool IsSet() const { return ImageSource == EWidgetImageSource::SVG ? SVG != nullptr : Texture != nullptr; }
+ };
+ 
++/** How one text part of a row sits: its justification, and its alignment in the space the row gives it. */
++USTRUCT(BlueprintType)
++struct NAMETBD_API FContextMenuTextAlignment
++{
++	GENERATED_BODY()
++
++	FContextMenuTextAlignment() = default;
++	FContextMenuTextAlignment(ETextJustify::Type InJustification, EHorizontalAlignment InHorizontal)
++		: Justification(InJustification), HorizontalAlignment(InHorizontal)
++	{
++	}
++
++	/** How the lines of the text line up inside the text's own box (which is as wide as its space when Horizontal is Fill). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alignment")
++	TEnumAsByte<ETextJustify::Type> Justification = ETextJustify::Left;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alignment", meta = (DisplayName = "Horizontal"))
++	TEnumAsByte<EHorizontalAlignment> HorizontalAlignment = HAlign_Fill;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alignment", meta = (DisplayName = "Vertical"))
++	TEnumAsByte<EVerticalAlignment> VerticalAlignment = VAlign_Center;
++};
++
++/**
++ * How rows show their Description (the row's tooltip): the engine's plain tooltip, or an info card tooltip with every setting
++ * a Tooltip Card Anchor has - template, text style, delay, and the Info Card Anchor's positioning.
++ */
++USTRUCT(BlueprintType)
++struct NAMETBD_API FContextMenuTooltipStyle
++{
++	GENERATED_BODY()
++
++	FContextMenuTooltipStyle();
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips")
++	EContextMenuTooltipMode Mode = EContextMenuTooltipMode::EngineTooltip;
++
++	/**
++	 * Where the tooltip's card class, trigger, delay, placement, sounds and animations come from: an Info Card Data Asset's
++	 * entry (Template Card ID, else its first). Empty: Project Settings > Info Card > Tooltips > Default Tooltip Template,
++	 * else the built-in tooltip (a Text Info Card).
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Tooltip Template", EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard", EditConditionHides))
++	TObjectPtr<UInfoCardDataAsset> Template = nullptr;
++
++	/** Which entry of the template. None: its first. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Template Card ID", EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard", EditConditionHides))
++	FName TemplateCardId = NAME_None;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Override Text Style", EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard", EditConditionHides))
++	bool bOverrideTextStyle = false;
++
++	/** The tooltip's look when its card is a Text Info Card (the built-in one is): panel, padding, width, fonts, colours. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard && bOverrideTextStyle", EditConditionHides))
++	FInfoCardTextStyle TextStyle;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Override Delay", EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard", EditConditionHides))
++	bool bOverrideDelay = true;
++
++	/** Seconds the cursor rests on a row before its tooltip shows, instead of the template's Highlight Delay. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard && bOverrideDelay", EditConditionHides, ClampMin = "0", UIMax = "3", Units = "s"))
++	float Delay = 0.6f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Override Positioning", EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard", EditConditionHides))
++	bool bOverridePositioning = true;
++
++	/**
++	 * Where the tooltip opens, instead of the template's: every placement an Info Card Anchor's entry has. Default: below and
++	 * to the right of the cursor, clear of a submenu opening beside the row.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard && bOverridePositioning", EditConditionHides))
++	FInfoCardPositioning Positioning;
++};
++
++/** How rows show their shortcuts (Shortcut, More Shortcuts, Gamepad Shortcut, Shortcut Input Action). */
++USTRUCT(BlueprintType)
++struct NAMETBD_API FContextMenuBindingStyle
++{
++	GENERATED_BODY()
++
++	FContextMenuBindingStyle();
++
++	/** Text: key names. Image: the keys' art from the project's Key Glyph Sets (no picking images per row). A row can choose its own. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
++	EContextMenuBindingDisplay Display = EContextMenuBindingDisplay::Text;
++
++	/** Between the keys of one binding: Ctrl+C. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
++	FText KeyDelimiter;
++
++	/** Between a row's bindings when it shows more than one: Ctrl+C, Ctrl+Insert. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
++	FText BindingSeparator;
++
++	/** Space on each side of a delimiter and a separator. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (ClampMin = "0", UIMax = "16", ForceUnits = "px"))
++	float KeyGap = 0.f;
++
++	/** A frame around each key, or around each whole binding (Frame Brush). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
++	EContextMenuBindingFrame Frame = EContextMenuBindingFrame::None;
++
++	/** The frame's look: a rounded box with an outline is a key cap. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (EditCondition = "Frame != EContextMenuBindingFrame::None", EditConditionHides))
++	FSlateBrush FrameBrush;
++
++	/** Space between the frame and what it holds. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (EditCondition = "Frame != EContextMenuBindingFrame::None", EditConditionHides))
++	FMargin FramePadding = FMargin(5.f, 1.f);
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (InlineEditConditionToggle))
++	bool bOverrideFont = false;
++
++	/** The keys' font, instead of the style's Shortcut Font. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (EditCondition = "bOverrideFont"))
++	FSlateFontInfo Font;
++
++	/** Height of a key's art (Image); wide art keeps its proportions. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (ClampMin = "4", UIMax = "48", ForceUnits = "px"))
++	float GlyphHeight = 16.f;
++
++	/** At most this many bindings per row, in order (Shortcut first). 0: all. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (ClampMin = "0", UIMax = "4"))
++	int32 MaxBindings = 0;
++
++	/** Rows' Gamepad Shortcuts (and Input Actions' gamepad keys) show only while the player uses a gamepad. Off: always. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
++	bool bGamepadBindingsOnlyOnGamepad = true;
++
++	/** While the player uses a gamepad, keyboard shortcuts aren't shown (a row with a Gamepad Shortcut shows that). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
++	bool bHideKeyboardBindingsOnGamepad = false;
++};
++
+ /**
+  * One line of a context menu: a button, a submenu, a divider, a text divider or a spacer. Rows fill the menu top-down in
+  * array order.
+@@ -116,40 +306,71 @@ struct NAMETBD_API FContextMenuEntry
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
+ 	FText Label;
+ 
+-	/** Shown as the row's tooltip on hover - what it does, or why it is disabled. */
++	/** Shown as the row's tooltip on hover - what it does, or why it is disabled. The style's Row Tooltips decide its look. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (MultiLine = true, EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
+ 	FText Description;
+ 
+-	/** Before everything else, in the icon column (so labels line up whether or not a row has one). A checked row shows its check mark here instead. */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Left Icon", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
+-	FContextMenuIcon LeftIcon;
++	/**
++	 * Before everything else, in the icon column, in order (the style's Icon Gap and Icon Delimiter between them). The column
++	 * is as wide as the row with the most left icons, so every label in the menu starts at the same place. A check box or
++	 * radio row shows its check mark there instead.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Left Icons", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
++	TArray<FContextMenuIcon> LeftIcons;
+ 
+-	/** Right before the label. With no label, an icon-only row. */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Center Icon", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
+-	FContextMenuIcon CenterIcon;
++	/** Right before the label, in order. With no label, an icon-only row. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Center Icons", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
++	TArray<FContextMenuIcon> CenterIcons;
+ 
+-	/** On the right, after Right Text and the shortcut. */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Right Icon", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
+-	FContextMenuIcon RightIcon;
++	/** On the right, after Right Text and the shortcut, in order. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Right Icons", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
++	TArray<FContextMenuIcon> RightIcons;
+ 
+-	/** Free text on the right, in the shortcut's font: a count, a value, a hint. */
++	/** Text in the middle of the row, between the label (the left text) and Right Text, aligned by the style's Center Text Alignment. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Center Text", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
++	FText CenterText;
++
++	/** Free text on the right, in the shortcut's font: a count, a value, a hint. Aligned by the style's Right Text Alignment. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Right Text", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
+ 	FText RightText;
+ 
++	// Shortcut -----------------------------------------------------------
++
+ 	/**
+ 	 * A keyboard shortcut, shown on the right ("Ctrl+C"). While the menu is open, pressing it chooses this row (the menu
+ 	 * asset's Shortcuts Work While Open). Showing it doesn't bind it anywhere else in the game.
+ 	 */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
+ 	FInputChord Shortcut;
+ 
++	/** Other shortcuts for the same row (Ctrl+Insert as well as Ctrl+C): shown after Shortcut, and working while open too. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (DisplayName = "More Shortcuts", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
++	TArray<FInputChord> MoreShortcuts;
++
++	/** A gamepad button for this row: shown while the player uses a gamepad (the style's Bindings decide), working while open. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (DisplayName = "Gamepad Shortcut", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
++	FKey GamepadShortcut;
++
++	/**
++	 * An Enhanced Input action whose keys this row shows: the key the player has it on for keyboard and for gamepad, their
++	 * rebinding included (Menu Input Subsystem). Those keys choose the row while the menu is open.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (DisplayName = "Shortcut Input Action", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
++	TObjectPtr<UInputAction> ShortcutAction = nullptr;
++
++	/** Text or the keys' art (Key Glyph Sets), instead of the style's Bindings > Display. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (DisplayName = "Shortcut Display", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
++	EContextMenuEntryBindingDisplay ShortcutDisplay = EContextMenuEntryBindingDisplay::StyleDefault;
++
++	// Content (Text Divider, Spacer) -------------------------------------
++
+ 	/** Text Divider: its text. Empty: a plain divider line. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Text", EditCondition = "EntryType == EContextMenuEntryType::Header", EditConditionHides))
+ 	FText HeaderText;
+ 
+-	/** Text Divider: where the text sits; the line fills the rest. */
++	/** Text Divider: where the text sits (the line fills the rest): the style's Text Divider Alignment, or this one's own. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Text Alignment", EditCondition = "EntryType == EContextMenuEntryType::Header", EditConditionHides))
+-	TEnumAsByte<EHorizontalAlignment> HeaderAlignment = HAlign_Left;
++	EContextMenuTextDividerAlignment TextDividerAlignment = EContextMenuTextDividerAlignment::StyleDefault;
+ 
+ 	/** Text Divider: draw the line beside the text. Off: the text alone. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Show Line", EditCondition = "EntryType == EContextMenuEntryType::Header", EditConditionHides))
+@@ -185,6 +406,26 @@ struct NAMETBD_API FContextMenuEntry
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action", meta = (EditCondition = "EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
+ 	TObjectPtr<UContextMenuAsset> Submenu = nullptr;
+ 
++	// Attached Menu ------------------------------------------------------
++
++	/**
++	 * A menu of its own beside this Button row, opened on hover or on press (Open On): a split button - "Open" runs, its arrow
++	 * of choices opens beside it - or a nested menu on a row that still does something when clicked.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attached Menu", meta = (DisplayName = "Attached Menu", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
++	TObjectPtr<UContextMenuAsset> AttachedMenu = nullptr;
++
++	/** The attached menu's look. Empty: the menu this row is in (as a submenu). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attached Menu", meta = (DisplayName = "Style", EditCondition = "EntryType == EContextMenuEntryType::Button && AttachedMenu != nullptr", EditConditionHides))
++	TObjectPtr<UContextMenuStyleAsset> AttachedMenuStyle = nullptr;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attached Menu", meta = (DisplayName = "Open On", EditCondition = "EntryType == EContextMenuEntryType::Button && AttachedMenu != nullptr", EditConditionHides))
++	EContextMenuAttachedMenuTrigger AttachedMenuOpenOn = EContextMenuAttachedMenuTrigger::Hover;
++
++	/** Where it opens. Default: beside the row, on its right (flipping left at the screen's edge), as a hover dropdown. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attached Menu", meta = (DisplayName = "Positioning", EditCondition = "EntryType == EContextMenuEntryType::Button && AttachedMenu != nullptr", EditConditionHides))
++	FInfoCardPositioning AttachedMenuPositioning = FInfoCardPositioning::MakeBeside(EDirection2D::Right, 4.f);
++
+ 	// State --------------------------------------------------------------
+ 
+ 	/** Off: shown greyed out, can't be chosen, and keyboard / gamepad navigation skips it. */
+@@ -211,14 +452,47 @@ struct NAMETBD_API FContextMenuEntry
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Look", meta = (DisplayName = "Row Button Preset", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
+ 	TObjectPtr<UContextMenuButtonPresetAsset> RowButtonPreset = nullptr;
+ 
++#if WITH_EDITORONLY_DATA
++	// Before rows had icon lists and Text Dividers a Style Default: loaded through CoreRedirects (Config/DefaultNameTBD.ini),
++	// moved into LeftIcons... / TextDividerAlignment by PostSerialize, never saved again (CPF_Deprecated).
++	UPROPERTY()
++	FContextMenuIcon LeftIcon_DEPRECATED;
++
++	UPROPERTY()
++	FContextMenuIcon CenterIcon_DEPRECATED;
++
++	UPROPERTY()
++	FContextMenuIcon RightIcon_DEPRECATED;
++
++	UPROPERTY()
++	TEnumAsByte<EHorizontalAlignment> HeaderAlignment_DEPRECATED = HAlign_Left;
++#endif
++
+ 	/** A row the player can choose (a button or a submenu that is enabled). */
+ 	bool IsSelectable() const
+ 	{
+ 		return bEnabled && (EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu);
+ 	}
+ 
++	/** A Button row with an Attached Menu. */
++	bool HasAttachedMenu() const { return EntryType == EContextMenuEntryType::Button && AttachedMenu != nullptr; }
++
++	/** Left Icons that are set (an empty element in the list is skipped). */
++	int32 CountLeftIcons() const;
++
+ 	/** The text the Entry ID is filled from when empty. */
+ 	FString GetIdSourceText() const;
++
++	void PostSerialize(const FArchive& Ar);
++};
++
++template<>
++struct TStructOpsTypeTraits<FContextMenuEntry> : public TStructOpsTypeTraitsBase2<FContextMenuEntry>
++{
++	enum
++	{
++		WithPostSerialize = true
++	};
+ };
+ 
+ /**
+@@ -267,9 +541,26 @@ struct NAMETBD_API FContextMenuStyle
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "0", UIMax = "64", ForceUnits = "px"))
+ 	float RowHeight = 28.f;
+ 
++	/** Between a row's highlight and its parts (the label starts this far inside the highlight). */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows")
+ 	FMargin RowPadding = FMargin(8.f, 2.f);
+ 
++	/**
++	 * Between a row's edges and its highlight (or its Row Button Preset's button), on top of the Panel Padding: highlights
++	 * that stop short of the panel's sides, or gaps between neighbouring highlights. 0: the highlight is as wide as the menu
++	 * less Panel Padding.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (DisplayName = "Highlight Inset"))
++	FMargin RowHighlightInset = FMargin(0.f);
++
++	/** Where a row's parts sit across the row. Fill: the label takes the room left, so shortcuts line up on the right. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (DisplayName = "Content Horizontal Alignment"))
++	TEnumAsByte<EHorizontalAlignment> RowContentHorizontalAlignment = HAlign_Fill;
++
++	/** Where a row's parts sit in its height (Row Height). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (DisplayName = "Content Vertical Alignment"))
++	TEnumAsByte<EVerticalAlignment> RowContentVerticalAlignment = VAlign_Center;
++
+ 	/** Drawn behind a row while hovered or focused (no Row Button Preset). */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows")
+ 	FSlateBrush RowHighlight;
+@@ -281,11 +572,15 @@ struct NAMETBD_API FContextMenuStyle
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "4", UIMax = "48", ForceUnits = "px"))
+ 	float IconSize = 16.f;
+ 
++	/** How rows show their Description: the engine's plain tooltip, or an info card tooltip set up here. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (DisplayName = "Row Tooltips"))
++	FContextMenuTooltipStyle RowTooltips;
++
+ 	/** Space between a row's parts (icon, label, right text, shortcut). */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "0", UIMax = "32", ForceUnits = "px"))
+ 	float PartGap = 8.f;
+ 
+-	/** Keep the icon column even when no row has a left icon or check mark, so labels line up across menus. */
++	/** Keep the icon column (one icon wide) even when no row has a left icon or check mark, so labels line up across menus. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows")
+ 	bool bAlwaysReserveIconColumn = false;
+ 
+@@ -313,6 +608,26 @@ struct NAMETBD_API FContextMenuStyle
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
+ 	FSlateColor ShortcutColor = FSlateColor(FLinearColor(0.9f, 0.91f, 0.93f, 0.5f));
+ 
++	/** The label (a row's left text): left by default, taking the room the row's other parts leave. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text", meta = (DisplayName = "Label Alignment"))
++	FContextMenuTextAlignment LabelAlignment = FContextMenuTextAlignment(ETextJustify::Left, HAlign_Fill);
++
++	/** Center Text (label font and colours): in the middle of the room between the label and the right-hand parts. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text", meta = (DisplayName = "Center Text Alignment"))
++	FContextMenuTextAlignment CenterTextAlignment = FContextMenuTextAlignment(ETextJustify::Center, HAlign_Center);
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text", meta = (DisplayName = "Right Text Alignment"))
++	FContextMenuTextAlignment RightTextAlignment = FContextMenuTextAlignment(ETextJustify::Right, HAlign_Right);
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text", meta = (DisplayName = "Shortcut Alignment"))
++	FContextMenuTextAlignment ShortcutAlignment = FContextMenuTextAlignment(ETextJustify::Right, HAlign_Right);
++
++	// Bindings ---------------------------------------------------------------------------------------------------------
++
++	/** How shortcuts are shown: text or the keys' art, the delimiter between keys (+), frames around them. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
++	FContextMenuBindingStyle Bindings;
++
+ 	// Icons ------------------------------------------------------------------------------------------------------------
+ 
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons")
+@@ -324,6 +639,14 @@ struct NAMETBD_API FContextMenuStyle
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons")
+ 	FLinearColor DisabledIconTint = FLinearColor(0.85f, 0.86f, 0.9f, 0.35f);
+ 
++	/** Space between the icons of a row's Left / Center / Right Icons (on each side of Icon Delimiter, when there is one). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons", meta = (ClampMin = "0", UIMax = "16", ForceUnits = "px"))
++	float IconGap = 4.f;
++
++	/** Drawn between a row's icons, in the shortcut font and colours ("|", "·"). Empty: just Icon Gap. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons")
++	FText IconDelimiter;
++
+ 	/** Shown on submenu rows. Unset: a chevron drawn as text. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons")
+ 	FContextMenuIcon SubmenuArrow;
+@@ -360,6 +683,22 @@ struct NAMETBD_API FContextMenuStyle
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers", meta = (DisplayName = "Uppercase Text Dividers"))
+ 	bool bUppercaseHeaders = false;
+ 
++	/**
++	 * Text Dividers whose Text Alignment is Style Default: Horizontal is where the text sits (the line fills the rest; Fill
++	 * reads as Left), Justification lines up text that wraps or stands alone, Vertical places it in the row.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers", meta = (DisplayName = "Text Divider Alignment"))
++	FContextMenuTextAlignment TextDividerAlignment = FContextMenuTextAlignment(ETextJustify::Left, HAlign_Left);
++
++	// Positioning ------------------------------------------------------------------------------------------------------
++
++	/**
++	 * Where menus in this style open: at the cursor (the default - opened from a key, beside the widget), beside the widget
++	 * (a dropdown, a flyout) or at a corner of the screen. A Context Menu Anchor can override it.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning")
++	FInfoCardPositioning Positioning;
++
+ 	// Behaviour --------------------------------------------------------------------------------------------------------
+ 
+ 	/** Seconds the cursor rests on a submenu row before its submenu opens. Clicking or pressing Right opens it at once. */
+@@ -463,7 +802,12 @@ public:
+ #endif
+ };
+ 
+-/** One anchor's change to one entry of its menu, kept by Entry ID. Synced from the menu asset; untouched means no change. */
++/**
++ * One anchor's change to one entry of its menu, kept by Entry ID. Synced from the menu asset; untouched means no change.
++ *
++ * Each field's EditCondition names its override toggle alone: an inline toggle only shows (and can be ticked) for an
++ * EditCondition of a single bool. Remove greys the fields out through the editor's row customization instead.
++ */
+ USTRUCT(BlueprintType)
+ struct NAMETBD_API FContextMenuEntryOverride
+ {
+@@ -473,26 +817,30 @@ struct NAMETBD_API FContextMenuEntryOverride
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Entry ID", EditCondition = "false"))
+ 	FName EntryId = NAME_None;
+ 
+-	/** Leaves this entry out of this anchor's menu. */
++	/**
++	 * Leaves this entry out of this anchor's menu (shown as a check box beside the Entry ID; the fields below grey out while it
++	 * is on). To keep the row but grey it out, override Enabled instead.
++	 */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Remove"))
+ 	bool bRemove = false;
+ 
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (InlineEditConditionToggle))
+ 	bool bOverrideEnabled = false;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Enabled", EditCondition = "bOverrideEnabled && !bRemove"))
++	/** Off: the row stays in the menu, greyed out, and can't be chosen (it isn't removed). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Enabled", EditCondition = "bOverrideEnabled"))
+ 	bool bEnabled = true;
+ 
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (InlineEditConditionToggle))
+ 	bool bOverrideLabel = false;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Label", EditCondition = "bOverrideLabel && !bRemove"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Label", EditCondition = "bOverrideLabel"))
+ 	FText Label;
+ 
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (InlineEditConditionToggle))
+ 	bool bOverrideChecked = false;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Checked", EditCondition = "bOverrideChecked && !bRemove"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Checked", EditCondition = "bOverrideChecked"))
+ 	bool bChecked = false;
+ 
+ 	bool IsUntouched() const { return !bRemove && !bOverrideEnabled && !bOverrideLabel && !bOverrideChecked; }
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuWidget.cpp b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuWidget.cpp
+index f370309..fd46aaa 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuWidget.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuWidget.cpp
+@@ -5,25 +5,34 @@
+ #include "Blueprint/WidgetBlueprintGeneratedClass.h"
+ #include "Blueprint/WidgetTree.h"
+ #include "Components/Border.h"
++#include "Components/ButtonSlot.h"
+ #include "Components/HorizontalBox.h"
+ #include "Components/HorizontalBoxSlot.h"
+ #include "Components/Image.h"
+ #include "Components/PanelWidget.h"
+ #include "Components/ScrollBox.h"
+ #include "Components/SizeBox.h"
++#include "Components/SizeBoxSlot.h"
+ #include "Components/Spacer.h"
+ #include "Components/TextBlock.h"
+ #include "Components/VerticalBox.h"
+ #include "Components/VerticalBoxSlot.h"
+ #include "Engine/Texture2D.h"
++#include "Fonts/FontMeasure.h"
+ #include "Framework/Application/SlateApplication.h"
+ #include "Input/Events.h"
++#include "InputAction.h"
++#include "Rendering/SlateRenderer.h"
+ 
+ #include "NameTBD/Buttons/ContextMenuButton.h"
+ #include "NameTBD/Buttons/Actions/ContextMenuInterface.h"
+ #include "NameTBD/Buttons/Actions/ContextMenuPayload.h"
+ #include "NameTBD/Cards/InfoCardAnchor.h"
++#include "NameTBD/Cards/TooltipCardAnchor.h"
+ #include "NameTBD/DeveloperSettings/InfoCardDeveloperSettings.h"
++#include "NameTBD/Menu/Input/MenuInputSubsystem.h"
++#include "NameTBD/Menu/Input/MenuInputTypes.h"
++#include "NameTBD/Menu/Settings/MenuProjectSettings.h"
+ #include "NameTBD/Widgets/WidgetSVGImage.h"
+ #include "ContextMenuAnchor.h"
+ 
+@@ -46,20 +55,98 @@ namespace ContextMenuWidgetPrivate
+ 		return Brush;
+ 	}
+ 
+-	/** The first usable texture of a Button Actions entry's icon list, for an entry that has none of its own. */
+-	FContextMenuIcon IconFromTagChoices(const TArray<FContextButtonImageChoice>& Choices)
++	/** The usable textures of a Button Actions entry's icon list, in order, for an entry that has no icons of its own there. */
++	TArray<FContextMenuIcon> IconsFromTagChoices(const TArray<FContextButtonImageChoice>& Choices)
+ 	{
+-		FContextMenuIcon Icon;
++		TArray<FContextMenuIcon> Icons;
+ 		for (const FContextButtonImageChoice& Choice : Choices)
+ 		{
+ 			if (Choice.IconChoice == EImageChoice::Icon && !Choice.Icon.IsNull())
+ 			{
++				FContextMenuIcon& Icon = Icons.AddDefaulted_GetRef();
+ 				Icon.ImageSource = EWidgetImageSource::Texture;
+ 				Icon.Texture = Choice.Icon.LoadSynchronous();
++			}
++		}
++		return Icons;
++	}
++
++	/** A chord's keys in the order menus write them: Ctrl, Shift, Alt, Cmd, then the key. */
++	void ChordKeys(const FInputChord& Chord, TArray<FKey>& OutKeys)
++	{
++		if (Chord.bCtrl)
++		{
++			OutKeys.Add(EKeys::LeftControl);
++		}
++		if (Chord.bShift)
++		{
++			OutKeys.Add(EKeys::LeftShift);
++		}
++		if (Chord.bAlt)
++		{
++			OutKeys.Add(EKeys::LeftAlt);
++		}
++		if (Chord.bCmd)
++		{
++			OutKeys.Add(EKeys::LeftCommand);
++		}
++		if (Chord.Key.IsValid())
++		{
++			OutKeys.Add(Chord.Key);
++		}
++	}
++
++	/** A key as a menu writes it: Ctrl, Shift, Alt, Cmd for modifiers, the gamepad family's label ("A" / "Cross"), else its short name. */
++	FText KeyName(const FKey& Key, EMenuGamepadFamily Family)
++	{
++		if (Key == EKeys::LeftControl || Key == EKeys::RightControl)
++		{
++			return NSLOCTEXT("ContextMenu", "KeyCtrl", "Ctrl");
++		}
++		if (Key == EKeys::LeftShift || Key == EKeys::RightShift)
++		{
++			return NSLOCTEXT("ContextMenu", "KeyShift", "Shift");
++		}
++		if (Key == EKeys::LeftAlt || Key == EKeys::RightAlt)
++		{
++			return NSLOCTEXT("ContextMenu", "KeyAlt", "Alt");
++		}
++		if (Key == EKeys::LeftCommand || Key == EKeys::RightCommand)
++		{
++			return NSLOCTEXT("ContextMenu", "KeyCmd", "Cmd");
++		}
++		if (Key.IsGamepadKey())
++		{
++			return MenuInputUtils::GetKeyLabel(Key, Family);
++		}
++		return Key.GetDisplayName(/*bLongDisplayName=*/false);
++	}
++
++	/**
++	 * A key's art: the player's Menu Input Subsystem (their device's family, the project's Key Glyph Sets), or - with no local
++	 * player, as in the designer - the project's sets read directly (keyboard art, or the Default Gamepad Family's).
++	 */
++	FMenuKeyGlyph FindKeyGlyph(const UObject* Context, const FKey& Key)
++	{
++		if (const UMenuInputSubsystem* Input = UMenuInputSubsystem::Get(Context))
++		{
++			return Input->GetKeyGlyph(Key);
++		}
++
++		const UMenuProjectSettings& Settings = UMenuProjectSettings::Get();
++		FMenuKeyGlyph Found;
++		Found.Key = Key;
++		for (const TSoftObjectPtr<UMenuKeyGlyphSet>& SetEntry : Settings.KeyGlyphSets)
++		{
++			const UMenuKeyGlyphSet* Set = SetEntry.LoadSynchronous();
++			const bool bRightSet = Set && (Key.IsGamepadKey() ? (!Set->bForKeyboard && Set->Family == Settings.DefaultGamepadFamily) : Set->bForKeyboard);
++			if (const FMenuKeyGlyph* InSet = bRightSet ? Set->Find(Key) : nullptr)
++			{
++				Found = *InSet;
+ 				break;
+ 			}
+ 		}
+-		return Icon;
++		return Found;
+ 	}
+ }
+ 
+@@ -68,7 +155,7 @@ namespace ContextMenuWidgetPrivate
+ // =================================================================================================
+ 
+ void UContextMenuEntryWidget::SetupEntry(const FContextMenuEntry& InEntry, const FContextMenuStyle& InStyle, UContextMenuWidget* InMenu, int32 InIndex,
+-	bool bReserveIconColumn, const TArray<UButtonAction*>& InActions, const TArray<UButtonAction*>& InTagActions)
++	int32 LeftColumnIcons, const TArray<UButtonAction*>& InActions, const TArray<UButtonAction*>& InTagActions)
+ {
+ 	Entry = InEntry;
+ 	EntryStyle = InStyle;
+@@ -88,20 +175,38 @@ void UContextMenuEntryWidget::SetupEntry(const FContextMenuEntry& InEntry, const
+ 
+ 	if (WidgetTree && !WidgetTree->RootWidget && ContextMenuWidgetPrivate::IsNativeClass(this))
+ 	{
+-		BuildNativeTree(bReserveIconColumn);
++		BuildNativeTree(LeftColumnIcons);
++		bBuiltNativeTree = true;
+ 	}
+ 
+ 	FillParts();
+ 	OnMenuEntrySet(Entry, bEntryChecked);
+ }
+ 
+-void UContextMenuEntryWidget::BuildNativeTree(bool bReserveIconColumn)
++float UContextMenuEntryWidget::GetIconColumnWidth(const FContextMenuStyle& InStyle, int32 InIconCount)
++{
++	if (InIconCount <= 0)
++	{
++		return 0.f;
++	}
++
++	// Between two icons: the gap, or gap - delimiter - gap. Measured, so every row's labels start at the same place.
++	float Between = InStyle.IconGap;
++	if (!InStyle.IconDelimiter.IsEmpty() && FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
++	{
++		const TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
++		Between = InStyle.IconGap * 2.f + FontMeasure->Measure(InStyle.IconDelimiter, InStyle.ShortcutFont).X;
++	}
++	return InIconCount * InStyle.IconSize + (InIconCount - 1) * Between;
++}
++
++void UContextMenuEntryWidget::BuildNativeTree(int32 LeftColumnIcons)
+ {
+ 	switch (Entry.EntryType)
+ 	{
+ 	case EContextMenuEntryType::Button:
+ 	case EContextMenuEntryType::Submenu:
+-		WidgetTree->RootWidget = BuildButtonRow(bReserveIconColumn);
++		WidgetTree->RootWidget = BuildButtonRow(LeftColumnIcons);
+ 		break;
+ 
+ 	case EContextMenuEntryType::Spacer:
+@@ -149,6 +254,41 @@ UWidget* UContextMenuEntryWidget::MakeIconPart(const FContextMenuIcon& Icon, FNa
+ 	return IconBox;
+ }
+ 
++UWidget* UContextMenuEntryWidget::MakeIconList(const TArray<FContextMenuIcon>& Icons, const TCHAR* Base, TArray<TObjectPtr<UWidget>>& OutParts)
++{
++	UHorizontalBox* List = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), FName(*FString::Printf(TEXT("%sList"), Base)));
++	const bool bDelimited = !EntryStyle.IconDelimiter.IsEmpty();
++
++	for (const FContextMenuIcon& Icon : Icons)
++	{
++		if (!Icon.IsSet())
++		{
++			continue;
++		}
++
++		const bool bFirst = OutParts.IsEmpty();
++		if (!bFirst && bDelimited)
++		{
++			UTextBlock* Delimiter = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), MakeUniqueObjectName(WidgetTree, UTextBlock::StaticClass(), TEXT("IconDelimiter")));
++			Delimiter->SetText(EntryStyle.IconDelimiter);
++			Delimiter->SetFont(EntryStyle.ShortcutFont);
++			UHorizontalBoxSlot* DelimiterSlot = List->AddChildToHorizontalBox(Delimiter);
++			DelimiterSlot->SetVerticalAlignment(VAlign_Center);
++			DelimiterSlot->SetPadding(FMargin(EntryStyle.IconGap, 0.f, 0.f, 0.f));
++			IconDelimiterParts.Add(Delimiter);
++		}
++
++		// Base, Base_1, Base_2...: the first is the part a Row Button Preset's targets (and Widget Blueprint rows) know.
++		const FName PartName = bFirst ? FName(Base) : FName(*FString::Printf(TEXT("%s_%d"), Base, OutParts.Num()));
++		TObjectPtr<UWidget> Part;
++		UHorizontalBoxSlot* IconSlot = List->AddChildToHorizontalBox(MakeIconPart(Icon, PartName, nullptr, Part));
++		IconSlot->SetVerticalAlignment(VAlign_Center);
++		IconSlot->SetPadding(FMargin(bFirst ? 0.f : EntryStyle.IconGap, 0.f, 0.f, 0.f));
++		OutParts.Add(Part);
++	}
++	return List;
++}
++
+ UWidget* UContextMenuEntryWidget::MakeLine(FName PartName)
+ {
+ 	USizeBox* LineBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), FName(*(PartName.ToString() + TEXT("Box"))));
+@@ -160,7 +300,7 @@ UWidget* UContextMenuEntryWidget::MakeLine(FName PartName)
+ 	return LineBox;
+ }
+ 
+-UWidget* UContextMenuEntryWidget::BuildButtonRow(bool bReserveIconColumn)
++UWidget* UContextMenuEntryWidget::BuildButtonRow(int32 LeftColumnIcons)
+ {
+ 	using namespace ContextMenuWidgetPrivate;
+ 
+@@ -169,73 +309,117 @@ UWidget* UContextMenuEntryWidget::BuildButtonRow(bool bReserveIconColumn)
+ 	USizeBox* RowSize = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), TEXT("RowSize"));
+ 	UHorizontalBox* Parts = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), TEXT("RowParts"));
+ 
++	// A button slot centres its content by default: the highlight then shrank to the label. It fills the row (the inset
++	// between them is the style's Highlight Inset, on the menu's slot for the row); FillParts puts this right again on
++	// whichever slot the button builds from.
+ 	RowButton->SetContent(RowHighlight);
+ 	RowHighlight->SetContent(RowSize);
+ 	RowSize->SetContent(Parts);
+ 
++	const EVerticalAlignment PartsVertical = EntryStyle.RowContentVerticalAlignment.GetValue();
+ 	bool bFirstPart = true;
+-	auto AddPart = [&Parts, &bFirstPart, this](UWidget* Part, bool bFill)
++	auto AddPart = [&Parts, &bFirstPart, PartsVertical, this](UWidget* Part, bool bFill) -> UHorizontalBoxSlot*
+ 	{
+ 		UHorizontalBoxSlot* PartSlot = Parts->AddChildToHorizontalBox(Part);
+-		PartSlot->SetVerticalAlignment(VAlign_Center);
++		PartSlot->SetVerticalAlignment(PartsVertical);
+ 		PartSlot->SetPadding(FMargin(bFirstPart ? 0.f : EntryStyle.PartGap, 0.f, 0.f, 0.f));
+ 		if (bFill)
+ 		{
+ 			PartSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+ 		}
+ 		bFirstPart = false;
++		return PartSlot;
+ 	};
+ 
+-	// The icon column: the left icon, or the check / radio mark of a checkable row. Kept (empty) when the menu reserves it.
++	// The icon column: the left icons, or the check / radio mark of a checkable row. As wide as the widest row's, so every
++	// label in the menu starts at the same place - and further right once a row has more icons.
+ 	const bool bHasCheck = Entry.CheckType != EContextMenuCheckType::None;
+-	if (Entry.LeftIcon.IsSet() || bHasCheck || bReserveIconColumn)
++	if (LeftColumnIcons > 0 || bHasCheck || Entry.CountLeftIcons() > 0)
+ 	{
+-		UWidget* Column = nullptr;
++		USizeBox* Column = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), TEXT("LeftIconColumn"));
++		Column->SetWidthOverride(GetIconColumnWidth(EntryStyle, FMath::Max3(LeftColumnIcons, bHasCheck ? 1 : 0, Entry.CountLeftIcons())));
++		UWidget* ColumnContent = nullptr;
+ 		if (bHasCheck)
+ 		{
+ 			const FContextMenuIcon& Mark = Entry.CheckType == EContextMenuCheckType::Radio ? EntryStyle.RadioMark : EntryStyle.CheckMark;
+-			Column = MakeIconPart(Mark, TEXT("CheckMark"), Entry.CheckType == EContextMenuCheckType::Radio ? TEXT("●") : TEXT("✓"), CheckMark);
++			ColumnContent = MakeIconPart(Mark, TEXT("CheckMark"), Entry.CheckType == EContextMenuCheckType::Radio ? TEXT("●") : TEXT("✓"), CheckMark);
+ 		}
+ 		else
+ 		{
+-			Column = MakeIconPart(Entry.LeftIcon, TEXT("LeftIcon"), nullptr, LeftIcon);
++			ColumnContent = MakeIconList(Entry.LeftIcons, TEXT("LeftIcon"), LeftIconParts);
++		}
++		if (USizeBoxSlot* ContentSlot = Cast<USizeBoxSlot>(Column->SetContent(ColumnContent)))
++		{
++			ContentSlot->SetHorizontalAlignment(HAlign_Left);
++			ContentSlot->SetVerticalAlignment(VAlign_Center);
+ 		}
+ 		AddPart(Column, false);
+ 	}
+ 
+-	if (Entry.CenterIcon.IsSet())
++	if (Entry.CenterIcons.ContainsByPredicate([](const FContextMenuIcon& Icon) { return Icon.IsSet(); }))
+ 	{
+-		AddPart(MakeIconPart(Entry.CenterIcon, TEXT("CenterIcon"), nullptr, CenterIcon), false);
++		AddPart(MakeIconList(Entry.CenterIcons, TEXT("CenterIcon"), CenterIconParts), false);
+ 	}
+ 
++	// Left text (the label), Center Text and Right Text: three texts, one per alignment. Center Text sits in the middle of the
++	// room between the label and the right-hand parts: the label and a spacer after Center Text share that room evenly.
+ 	LabelText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("LabelText"));
+ 	LabelText->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis);
+-	AddPart(LabelText, true);
++	const bool bHasCenterText = !Entry.CenterText.IsEmpty();
++	const EHorizontalAlignment CenterPlacement = EntryStyle.CenterTextAlignment.HorizontalAlignment.GetValue();
++	AddPart(LabelText, !bHasCenterText || CenterPlacement != HAlign_Left);
++
++	if (bHasCenterText)
++	{
++		CenterText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("CenterText"));
++		CenterText->SetTextOverflowPolicy(ETextOverflowPolicy::Ellipsis);
++		AddPart(CenterText, false);
++		if (CenterPlacement != HAlign_Right)
++		{
++			AddPart(WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), TEXT("CenterTextBalance")), true);
++		}
++	}
+ 
+ 	RightText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("RightText"));
+ 	AddPart(RightText, false);
+ 
++	// The shortcuts: as text in ShortcutText, or keys built into BindingsBox (art, frames, spaced delimiters).
+ 	ShortcutText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("ShortcutText"));
+ 	AddPart(ShortcutText, false);
++	UHorizontalBox* Keys = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), TEXT("BindingsBox"));
++	BindingsBox = Keys;
++	AddPart(Keys, false);
+ 
+-	if (Entry.RightIcon.IsSet())
++	if (Entry.RightIcons.ContainsByPredicate([](const FContextMenuIcon& Icon) { return Icon.IsSet(); }))
+ 	{
+-		AddPart(MakeIconPart(Entry.RightIcon, TEXT("RightIcon"), nullptr, RightIcon), false);
++		AddPart(MakeIconList(Entry.RightIcons, TEXT("RightIcon"), RightIconParts), false);
+ 	}
+ 
+-	if (Entry.EntryType == EContextMenuEntryType::Submenu)
++	if (Entry.EntryType == EContextMenuEntryType::Submenu || Entry.HasAttachedMenu())
+ 	{
+ 		AddPart(MakeIconPart(EntryStyle.SubmenuArrow, TEXT("SubmenuArrow"), TEXT("›"), SubmenuArrow), false);
++	}
++
++	// The row's tooltip as an info card (the style's Row Tooltips): a Tooltip Card Anchor around the button.
++	UWidget* RowRoot = RowButton;
++	if (!Entry.Description.IsEmpty() && EntryStyle.RowTooltips.Mode == EContextMenuTooltipMode::TooltipCard)
++	{
++		TooltipAnchor = WidgetTree->ConstructWidget<UTooltipCardAnchor>(UTooltipCardAnchor::StaticClass(), TEXT("TooltipAnchor"));
++		TooltipAnchor->SetContent(RowRoot);
++		RowRoot = TooltipAnchor;
++	}
+ 
+-		// The submenu opens from an anchor around the button: hover (after the style's delay), click and Right all go
+-		// through it, and it brings placement beside the row, flipping at the screen edge and keep-open while the cursor
+-		// travels to the submenu.
++	if (OpensMenuBeside())
++	{
++		// The submenu (or attached menu) opens from an anchor around the row: hover (after the style's delay), click and
++		// Right all go through it, and it brings placement beside the row, flipping at the screen edge and keep-open while
++		// the cursor travels to it.
+ 		SubmenuAnchor = WidgetTree->ConstructWidget<UInfoCardAnchor>(UInfoCardAnchor::StaticClass(), TEXT("SubmenuAnchor"));
+-		SubmenuAnchor->SetContent(RowButton);
++		SubmenuAnchor->SetContent(RowRoot);
+ 		return SubmenuAnchor;
+ 	}
+ 
+-	return RowButton;
++	return RowRoot;
+ }
+ 
+ UWidget* UContextMenuEntryWidget::BuildDividerRow()
+@@ -261,7 +445,30 @@ UWidget* UContextMenuEntryWidget::BuildDividerRow()
+ 	else
+ 	{
+ 		HeaderText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("HeaderText"));
+-		const EHorizontalAlignment Alignment = Entry.HeaderAlignment.GetValue();
++
++		// The entry's own alignment (its justification follows it), or the style's Text Divider Alignment.
++		const FContextMenuTextAlignment& StyleAlignment = EntryStyle.TextDividerAlignment;
++		EHorizontalAlignment Alignment = StyleAlignment.HorizontalAlignment.GetValue() == HAlign_Fill ? HAlign_Left : StyleAlignment.HorizontalAlignment.GetValue();
++		ETextJustify::Type Justification = StyleAlignment.Justification.GetValue();
++		switch (Entry.TextDividerAlignment)
++		{
++		case EContextMenuTextDividerAlignment::Left:
++			Alignment = HAlign_Left;
++			Justification = ETextJustify::Left;
++			break;
++		case EContextMenuTextDividerAlignment::Center:
++			Alignment = HAlign_Center;
++			Justification = ETextJustify::Center;
++			break;
++		case EContextMenuTextDividerAlignment::Right:
++			Alignment = HAlign_Right;
++			Justification = ETextJustify::Right;
++			break;
++		case EContextMenuTextDividerAlignment::StyleDefault:
++		default:
++			break;
++		}
++		HeaderText->SetJustification(Justification);
+ 		const float Gap = EntryStyle.PartGap;
+ 
+ 		// Category ------   ---- Category ----   ------ Category
+@@ -271,15 +478,15 @@ UWidget* UContextMenuEntryWidget::BuildDividerRow()
+ 		}
+ 
+ 		UHorizontalBoxSlot* TextSlot = Row->AddChildToHorizontalBox(HeaderText);
+-		TextSlot->SetVerticalAlignment(VAlign_Center);
++		TextSlot->SetVerticalAlignment(StyleAlignment.VerticalAlignment);
+ 		if (!bLine)
+ 		{
+-			// Text alone: the row is the text, aligned within it.
++			// Text alone: the row is the text's room, and the text sits in it by the alignment.
+ 			TextSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+-			HeaderText->SetJustification(Alignment == HAlign_Center ? ETextJustify::Center : (Alignment == HAlign_Right ? ETextJustify::Right : ETextJustify::Left));
++			TextSlot->SetHorizontalAlignment(Alignment);
+ 		}
+ 
+-		if (bLine && (Alignment == HAlign_Left || Alignment == HAlign_Fill || Alignment == HAlign_Center))
++		if (bLine && (Alignment == HAlign_Left || Alignment == HAlign_Center))
+ 		{
+ 			AddLine(TEXT("DividerLine"), FMargin(Gap, 0.f, 0.f, 0.f));
+ 		}
+@@ -296,6 +503,8 @@ UWidget* UContextMenuEntryWidget::BuildDividerRow()
+ 
+ void UContextMenuEntryWidget::FillParts()
+ {
++	using namespace ContextMenuWidgetPrivate;
++
+ 	if (HeaderText)
+ 	{
+ 		HeaderText->SetText(Entry.HeaderText);
+@@ -327,24 +536,43 @@ void UContextMenuEntryWidget::FillParts()
+ 	else
+ 	{
+ 		FButtonStyle RowLook = RowButton->GetStyle();
+-		RowLook.Normal = ContextMenuWidgetPrivate::NoDrawBrush();
+-		RowLook.Hovered = ContextMenuWidgetPrivate::NoDrawBrush();
+-		RowLook.Pressed = ContextMenuWidgetPrivate::NoDrawBrush();
+-		RowLook.Disabled = ContextMenuWidgetPrivate::NoDrawBrush();
++		RowLook.Normal = NoDrawBrush();
++		RowLook.Hovered = NoDrawBrush();
++		RowLook.Pressed = NoDrawBrush();
++		RowLook.Disabled = NoDrawBrush();
+ 		RowLook.NormalPadding = FMargin(0.f);
+ 		RowLook.PressedPadding = FMargin(0.f);
+ 		RowButton->SetStyle(RowLook);
+ 	}
++
++	// After the preset, on the slot the button really builds from (the content slot, or the one kept for parts hidden from
++	// the Hierarchy): the row's content fills the button, so the highlight is as wide as the row. A Widget Blueprint row's
++	// own slot is its author's.
++	if (bBuiltNativeTree)
++	{
++		if (UButtonSlot* PartsSlot = Cast<UButtonSlot>(RowButton->GetPartsSlot()))
++		{
++			PartsSlot->SetHorizontalAlignment(HAlign_Fill);
++			PartsSlot->SetVerticalAlignment(VAlign_Fill);
++			PartsSlot->SetPadding(FMargin(0.f));
++		}
++	}
++
+ 	RowButton->bShouldDestroyCard = false;
+ 	RowButton->bButtonCanBeEnabled = false;
+ 	RowButton->SetIsEnabled(Entry.bEnabled);
+-	RowButton->SetToolTipText(Entry.Description);
+ 	RowButton->OnContextClicked.AddUniqueDynamic(this, &UContextMenuEntryWidget::HandleRowClicked);
+ 
+ 	if (RowHighlight)
+ 	{
+ 		RowHighlight->SetPadding(EntryStyle.RowPadding);
+-		RowHighlight->SetBrush(ContextMenuWidgetPrivate::NoDrawBrush());
++		RowHighlight->SetBrush(NoDrawBrush());
++		if (bBuiltNativeTree)
++		{
++			// Fill: the label takes the room left and the shortcuts line up on the right; otherwise the parts huddle.
++			RowHighlight->SetHorizontalAlignment(EntryStyle.RowContentHorizontalAlignment);
++			RowHighlight->SetVerticalAlignment(VAlign_Fill);
++		}
+ 	}
+ 
+ 	if (USizeBox* RowSize = Cast<USizeBox>(RowHighlight ? RowHighlight->GetContent() : nullptr))
+@@ -352,11 +580,35 @@ void UContextMenuEntryWidget::FillParts()
+ 		RowSize->SetMinDesiredHeight(EntryStyle.RowHeight);
+ 	}
+ 
++	// Each text by the style's alignment for it (native rows: a Widget Blueprint row lays its texts out itself).
++	auto AlignText = [this](UTextBlock* Text, const FContextMenuTextAlignment& Alignment)
++	{
++		if (!Text || !bBuiltNativeTree)
++		{
++			return;
++		}
++		Text->SetJustification(Alignment.Justification);
++		if (UHorizontalBoxSlot* TextSlot = Cast<UHorizontalBoxSlot>(Text->Slot))
++		{
++			TextSlot->SetHorizontalAlignment(Alignment.HorizontalAlignment);
++			TextSlot->SetVerticalAlignment(Alignment.VerticalAlignment);
++		}
++	};
++
+ 	if (LabelText)
+ 	{
+ 		LabelText->SetText(Entry.Label);
+ 		LabelText->SetFont(EntryStyle.LabelFont);
+ 		LabelText->SetVisibility(Entry.Label.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
++		AlignText(LabelText, EntryStyle.LabelAlignment);
++	}
++
++	if (CenterText)
++	{
++		CenterText->SetText(Entry.CenterText);
++		CenterText->SetFont(EntryStyle.LabelFont);
++		CenterText->SetVisibility(Entry.CenterText.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
++		AlignText(CenterText, EntryStyle.CenterTextAlignment);
+ 	}
+ 
+ 	if (RightText)
+@@ -364,57 +616,355 @@ void UContextMenuEntryWidget::FillParts()
+ 		RightText->SetText(Entry.RightText);
+ 		RightText->SetFont(EntryStyle.ShortcutFont);
+ 		RightText->SetVisibility(Entry.RightText.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
++		AlignText(RightText, EntryStyle.RightTextAlignment);
+ 	}
+ 
+-	if (ShortcutText)
+-	{
+-		const bool bHasShortcut = Entry.Shortcut.IsValidChord();
+-		ShortcutText->SetText(bHasShortcut ? Entry.Shortcut.GetInputText(/*bLongDisplayName=*/false) : FText::GetEmpty());
+-		ShortcutText->SetFont(EntryStyle.ShortcutFont);
+-		ShortcutText->SetVisibility(bHasShortcut ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+-	}
++	AlignText(ShortcutText, EntryStyle.ShortcutAlignment);
++	FillBindings();
++	FillIconParts();
+ 
+ 	if (SubmenuArrow)
+ 	{
+-		SubmenuArrow->SetVisibility(Entry.EntryType == EContextMenuEntryType::Submenu ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
++		SubmenuArrow->SetVisibility(OpensMenuBeside() ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+ 	}
+ 
+-	if (Entry.EntryType == EContextMenuEntryType::Submenu)
++	if (OpensMenuBeside())
+ 	{
+ 		SetupSubmenuAnchor();
+ 	}
++	SetupTooltip();
+ 
+ 	ApplyStateLook();
+ }
+ 
++void UContextMenuEntryWidget::FillIconParts()
++{
++	// A Widget Blueprint row: its LeftIcon, LeftIcon_1, LeftIcon_2... in order (the native row made its lists itself).
++	auto Collect = [this](UWidget* First, const TCHAR* Base, TArray<TObjectPtr<UWidget>>& OutParts)
++	{
++		if (!OutParts.IsEmpty() || !First || !WidgetTree)
++		{
++			return;
++		}
++		OutParts.Add(First);
++		for (int32 Index = 1; Index < 16; ++Index)
++		{
++			UWidget* Next = WidgetTree->FindWidget(FName(*FString::Printf(TEXT("%s_%d"), Base, Index)));
++			if (!Next)
++			{
++				break;
++			}
++			OutParts.Add(Next);
++		}
++	};
++	Collect(LeftIcon, TEXT("LeftIcon"), LeftIconParts);
++	Collect(CenterIcon, TEXT("CenterIcon"), CenterIconParts);
++	Collect(RightIcon, TEXT("RightIcon"), RightIconParts);
++
++	// The first part of each list is the one a Row Button Preset's targets and Blueprint reach by name.
++	LeftIcon = LeftIconParts.IsEmpty() ? LeftIcon.Get() : LeftIconParts[0].Get();
++	CenterIcon = CenterIconParts.IsEmpty() ? CenterIcon.Get() : CenterIconParts[0].Get();
++	RightIcon = RightIconParts.IsEmpty() ? RightIcon.Get() : RightIconParts[0].Get();
++
++	// Parts with no icon of the entry's to show (a Widget Blueprint row with more slots than icons) are collapsed.
++	auto ShowFor = [](const TArray<TObjectPtr<UWidget>>& PartList, const TArray<FContextMenuIcon>& Icons)
++	{
++		int32 SetCount = 0;
++		for (const FContextMenuIcon& Icon : Icons)
++		{
++			SetCount += Icon.IsSet() ? 1 : 0;
++		}
++		for (int32 Index = 0; Index < PartList.Num(); ++Index)
++		{
++			if (PartList[Index])
++			{
++				PartList[Index]->SetVisibility(Index < SetCount ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
++			}
++		}
++	};
++	if (Entry.CheckType == EContextMenuCheckType::None || !bBuiltNativeTree)
++	{
++		ShowFor(LeftIconParts, Entry.LeftIcons);
++	}
++	ShowFor(CenterIconParts, Entry.CenterIcons);
++	ShowFor(RightIconParts, Entry.RightIcons);
++
++	for (UTextBlock* Delimiter : IconDelimiterParts)
++	{
++		if (Delimiter)
++		{
++			Delimiter->SetText(EntryStyle.IconDelimiter);
++			Delimiter->SetFont(EntryStyle.ShortcutFont);
++		}
++	}
++}
++
++void UContextMenuEntryWidget::GatherBindings(TArray<TArray<FKey>>& OutBindings, bool bForDisplay) const
++{
++	using namespace ContextMenuWidgetPrivate;
++	OutBindings.Reset();
++	if (Entry.EntryType != EContextMenuEntryType::Button)
++	{
++		return;
++	}
++
++	const FContextMenuBindingStyle& Look = EntryStyle.Bindings;
++	const UMenuInputSubsystem* Input = UMenuInputSubsystem::Get(this);
++	const bool bOnGamepad = Input && Input->IsUsingGamepad();
++	const bool bKeyboard = !bForDisplay || !(bOnGamepad && Look.bHideKeyboardBindingsOnGamepad);
++	const bool bGamepad = !bForDisplay || bOnGamepad || !Look.bGamepadBindingsOnlyOnGamepad;
++
++	auto AddKeys = [&OutBindings](TArray<FKey>&& Keys)
++	{
++		if (Keys.Num() > 0 && !OutBindings.Contains(Keys))
++		{
++			OutBindings.Add(MoveTemp(Keys));
++		}
++	};
++	auto AddChord = [&AddKeys](const FInputChord& Chord)
++	{
++		if (Chord.IsValidChord())
++		{
++			TArray<FKey> Keys;
++			ChordKeys(Chord, Keys);
++			AddKeys(MoveTemp(Keys));
++		}
++	};
++	auto AddKey = [&AddKeys](const FKey& Key)
++	{
++		if (Key.IsValid())
++		{
++			AddKeys(TArray<FKey>{ Key });
++		}
++	};
++
++	if (bKeyboard)
++	{
++		AddChord(Entry.Shortcut);
++		for (const FInputChord& More : Entry.MoreShortcuts)
++		{
++			AddChord(More);
++		}
++		if (Input && Entry.ShortcutAction)
++		{
++			AddKey(Input->GetKeyForAction(Entry.ShortcutAction, EMenuInputDevice::KeyboardMouse));
++		}
++	}
++	if (bGamepad)
++	{
++		AddKey(Entry.GamepadShortcut);
++		if (Input && Entry.ShortcutAction)
++		{
++			AddKey(Input->GetKeyForAction(Entry.ShortcutAction, EMenuInputDevice::Gamepad));
++		}
++	}
++
++	if (bForDisplay && Look.MaxBindings > 0 && OutBindings.Num() > Look.MaxBindings)
++	{
++		OutBindings.SetNum(Look.MaxBindings);
++	}
++}
++
++bool UContextMenuEntryWidget::MatchesShortcut(const FInputChord& Pressed) const
++{
++	TArray<TArray<FKey>> Bindings;
++	GatherBindings(Bindings, /*bForDisplay=*/false);
++
++	TArray<FKey> PressedKeys;
++	ContextMenuWidgetPrivate::ChordKeys(Pressed, PressedKeys);
++	return Bindings.Contains(PressedKeys);
++}
++
++UTextBlock* UContextMenuEntryWidget::MakeBindingText(const FText& InText)
++{
++	const FContextMenuBindingStyle& Look = EntryStyle.Bindings;
++	UTextBlock* Text = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), MakeUniqueObjectName(WidgetTree, UTextBlock::StaticClass(), TEXT("BindingText")));
++	Text->SetText(InText);
++	Text->SetFont(Look.bOverrideFont ? Look.Font : EntryStyle.ShortcutFont);
++	BindingTextParts.Add(Text);
++	return Text;
++}
++
++UWidget* UContextMenuEntryWidget::MakeGlyphImage(const FMenuImage& Art)
++{
++	const float Height = EntryStyle.Bindings.GlyphHeight;
++	if (Art.ImageSource == EWidgetImageSource::SVG && Art.SVG)
++	{
++		UWidgetSVGImage* Vector = WidgetTree->ConstructWidget<UWidgetSVGImage>(UWidgetSVGImage::StaticClass(), MakeUniqueObjectName(WidgetTree, UWidgetSVGImage::StaticClass(), TEXT("BindingGlyph")));
++		Vector->SetSVG(Art.SVG);
++		const FVector2D ArtSize = Art.SVG->GetSVGSize();
++		Vector->SetImageSize(FVector2D(ArtSize.Y > 0.f ? Height * ArtSize.X / ArtSize.Y : Height, Height));
++		return Vector;
++	}
++
++	UImage* Picture = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), MakeUniqueObjectName(WidgetTree, UImage::StaticClass(), TEXT("BindingGlyph")));
++	Picture->SetBrushResourceObject(Art.Image);
++	float Width = Height;
++	if (const UTexture2D* Texture = Cast<UTexture2D>(Art.Image))
++	{
++		// Wide art (Space, a d-pad) keeps its proportions.
++		Width = Texture->GetSizeY() > 0 ? Height * Texture->GetSizeX() / Texture->GetSizeY() : Height;
++	}
++	Picture->SetDesiredSizeOverride(FVector2D(Width, Height));
++	return Picture;
++}
++
++void UContextMenuEntryWidget::FillBindings()
++{
++	using namespace ContextMenuWidgetPrivate;
++
++	TArray<TArray<FKey>> Bindings;
++	GatherBindings(Bindings, /*bForDisplay=*/true);
++
++	const FContextMenuBindingStyle& Look = EntryStyle.Bindings;
++	const bool bAsArt = Entry.ShortcutDisplay == EContextMenuEntryBindingDisplay::Image
++		|| (Entry.ShortcutDisplay == EContextMenuEntryBindingDisplay::StyleDefault && Look.Display == EContextMenuBindingDisplay::Image);
++	const UMenuInputSubsystem* Input = UMenuInputSubsystem::Get(this);
++	const EMenuGamepadFamily Family = Input ? Input->GetGamepadFamily() : UMenuProjectSettings::Get().DefaultGamepadFamily;
++
++	// Text first: Ctrl+C, Ctrl+Insert. ShortcutText shows it when nothing needs building (and in Widget Blueprint rows with
++	// no BindingsBox).
++	TArray<FString> BindingStrings;
++	for (const TArray<FKey>& Keys : Bindings)
++	{
++		TArray<FString> Names;
++		for (const FKey& Key : Keys)
++		{
++			Names.Add(KeyName(Key, Family).ToString());
++		}
++		BindingStrings.Add(FString::Join(Names, *Look.KeyDelimiter.ToString()));
++	}
++	const bool bPlainText = !bAsArt && Look.Frame == EContextMenuBindingFrame::None && Look.KeyGap <= 0.f;
++	const bool bBuild = BindingsBox && !bPlainText && Bindings.Num() > 0;
++
++	if (ShortcutText)
++	{
++		ShortcutText->SetText(FText::FromString(FString::Join(BindingStrings, *Look.BindingSeparator.ToString())));
++		ShortcutText->SetFont(Look.bOverrideFont ? Look.Font : EntryStyle.ShortcutFont);
++		ShortcutText->SetVisibility(Bindings.Num() > 0 && !bBuild ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
++	}
++
++	BindingTextParts.Reset();
++	BindingImageParts.Reset();
++	BindingImageTints.Reset();
++	if (!BindingsBox)
++	{
++		return;
++	}
++	BindingsBox->ClearChildren();
++	BindingsBox->SetVisibility(bBuild ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
++	if (!bBuild || !WidgetTree)
++	{
++		return;
++	}
++
++	auto Add = [](UPanelWidget* Container, UWidget* Child, float LeftGap)
++	{
++		UPanelSlot* ChildSlot = Container->AddChild(Child);
++		if (UHorizontalBoxSlot* AsHorizontal = Cast<UHorizontalBoxSlot>(ChildSlot))
++		{
++			AsHorizontal->SetVerticalAlignment(VAlign_Center);
++			AsHorizontal->SetPadding(FMargin(LeftGap, 0.f, 0.f, 0.f));
++		}
++	};
++	auto MakeFrame = [this, &Look](UWidget* Content) -> UBorder*
++	{
++		UBorder* Frame = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), MakeUniqueObjectName(WidgetTree, UBorder::StaticClass(), TEXT("BindingFrame")));
++		Frame->SetBrush(Look.FrameBrush);
++		Frame->SetPadding(Look.FramePadding);
++		Frame->SetHorizontalAlignment(HAlign_Center);
++		Frame->SetVerticalAlignment(VAlign_Center);
++		Frame->SetContent(Content);
++		return Frame;
++	};
++
++	for (int32 BindingIndex = 0; BindingIndex < Bindings.Num(); ++BindingIndex)
++	{
++		if (BindingIndex > 0)
++		{
++			Add(BindingsBox, MakeBindingText(Look.BindingSeparator), Look.KeyGap);
++		}
++
++		// Whole Binding: one frame, the keys and their delimiters inside it. Otherwise straight into the box.
++		UPanelWidget* Container = BindingsBox;
++		float LeadGap = BindingIndex > 0 ? Look.KeyGap : 0.f;
++		if (Look.Frame == EContextMenuBindingFrame::WholeBinding)
++		{
++			UHorizontalBox* Inner = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), MakeUniqueObjectName(WidgetTree, UHorizontalBox::StaticClass(), TEXT("BindingKeys")));
++			Add(BindingsBox, MakeFrame(Inner), LeadGap);
++			Container = Inner;
++			LeadGap = 0.f;
++		}
++
++		const TArray<FKey>& Keys = Bindings[BindingIndex];
++		for (int32 KeyIndex = 0; KeyIndex < Keys.Num(); ++KeyIndex)
++		{
++			if (KeyIndex > 0)
++			{
++				Add(Container, MakeBindingText(Look.KeyDelimiter), Look.KeyGap);
++			}
++
++			// The key's art from the project's Key Glyph Sets, else its name.
++			UWidget* KeyPart = nullptr;
++			if (bAsArt)
++			{
++				const FMenuKeyGlyph Glyph = FindKeyGlyph(this, Keys[KeyIndex]);
++				if (Glyph.Image.HasImage())
++				{
++					KeyPart = MakeGlyphImage(Glyph.Image);
++					BindingImageParts.Add(KeyPart);
++					BindingImageTints.Add(Glyph.Image.Tint);
++				}
++			}
++			if (!KeyPart)
++			{
++				KeyPart = MakeBindingText(KeyName(Keys[KeyIndex], Family));
++			}
++
++			if (Look.Frame == EContextMenuBindingFrame::EachKey)
++			{
++				KeyPart = MakeFrame(KeyPart);
++			}
++			Add(Container, KeyPart, KeyIndex > 0 ? Look.KeyGap : LeadGap);
++		}
++	}
++}
++
+ void UContextMenuEntryWidget::SetupSubmenuAnchor()
+ {
+ 	UContextMenuWidget* Menu = OwningMenu.Get();
+-	if (!SubmenuAnchor || !Menu || !Entry.Submenu)
++	const bool bAttached = Entry.HasAttachedMenu();
++	UContextMenuAsset* Opens = bAttached ? Entry.AttachedMenu.Get() : Entry.Submenu.Get();
++	if (!SubmenuAnchor || !Menu || !Opens)
+ 	{
+ 		return;
+ 	}
+ 
+-	// The submenu looks like the menu it came from, whatever its own asset says, and reports to the same anchor.
++	// A submenu looks like the menu it came from, whatever its own asset says; an attached menu may pick a style of its own.
++	// Both report to the same anchor.
++	UContextMenuStyleAsset* OwnStyle = bAttached ? Entry.AttachedMenuStyle.Get() : nullptr;
+ 	UInfoCardPayload_ContextMenu* SubPayload = NewObject<UInfoCardPayload_ContextMenu>(SubmenuAnchor);
+-	SubPayload->Menu = Entry.Submenu;
+-	SubPayload->StyleOverride = Menu->GetMenuStyleAsset();
++	SubPayload->Menu = Opens;
++	SubPayload->StyleOverride = OwnStyle ? OwnStyle : Menu->GetMenuStyleAsset();
+ 	SubPayload->MenuAnchor = Menu->GetMenuAnchor();
+ 
++	const TSubclassOf<UContextMenuWidget> MenuClass = OwnStyle ? OwnStyle->Style.MenuWidgetClass : EntryStyle.MenuWidgetClass;
++
+ 	FInfoCardSpec Spec;
+ 	Spec.CardId = SubmenuCardId;
+-	Spec.CardClass = EntryStyle.MenuWidgetClass ? TSubclassOf<UInfoCardWidget>(EntryStyle.MenuWidgetClass) : TSubclassOf<UInfoCardWidget>(Menu->GetClass());
++	Spec.CardClass = MenuClass ? TSubclassOf<UInfoCardWidget>(MenuClass) : TSubclassOf<UInfoCardWidget>(Menu->GetClass());
+ 	Spec.CardType = ECardType::Hover;
+ 	Spec.HoverDelay.Source = EInfoCardValueSource::Custom;
+ 	Spec.HoverDelay.CustomValue = EntryStyle.SubmenuDelay;
+-	Spec.bTriggerOnMouseHover = true;
++	// An attached menu set to open on press waits for the click (HandleEntryChosen opens it by ID).
++	Spec.bTriggerOnMouseHover = !bAttached || Entry.AttachedMenuOpenOn == EContextMenuAttachedMenuTrigger::Hover;
+ 	Spec.bTriggerOnFocus = false;
+ 	Spec.bKeepOpenUntilCursorLeaves = true;
+-	Spec.PositionMode = EInfoCardPosition::ToIcon;
+-	Spec.IconPosition = EDirection2D::Right;
+-	Spec.IconAnchorPadding = EntryStyle.PanelPadding.Right;
+-	Spec.FlipToAvoidClipping.Source = EInfoCardValueSource::Custom;
+-	Spec.FlipToAvoidClipping.CustomValue = true;
++
++	// Beside the row on its right, its panel lined up with this one's (gap = panel padding); an attached menu as it says.
++	const FInfoCardPositioning Beside = bAttached ? Entry.AttachedMenuPositioning : FInfoCardPositioning::MakeBeside(EDirection2D::Right, EntryStyle.PanelPadding.Right);
++	Beside.ApplyTo(Spec);
++
+ 	Spec.CloseOtherCardsScope = ECardCloseOthersScope::SameSourceWidgetClass;
+ 	Spec.RemoveCardOnPressing = ECardRemoveOnPressZone::OutsideAnchorAndCard;
+ 	Spec.ZOrder = 2000;
+@@ -429,6 +979,31 @@ void UContextMenuEntryWidget::SetupSubmenuAnchor()
+ 	SubmenuAnchor->CustomInfoCards = { Spec };
+ }
+ 
++void UContextMenuEntryWidget::SetupTooltip()
++{
++	const FContextMenuTooltipStyle& Tips = EntryStyle.RowTooltips;
++	const bool bAsCard = TooltipAnchor && Tips.Mode == EContextMenuTooltipMode::TooltipCard;
++
++	// The engine's plain tooltip, or none on the button when the card shows the Description.
++	RowButton->SetToolTipText(bAsCard ? FText::GetEmpty() : Entry.Description);
++	if (!TooltipAnchor)
++	{
++		return;
++	}
++
++	TooltipAnchor->TooltipTemplate = Tips.Template;
++	TooltipAnchor->TemplateCardId = Tips.TemplateCardId;
++	TooltipAnchor->bOverrideTooltipTextStyle = Tips.bOverrideTextStyle;
++	TooltipAnchor->TooltipTextStyle = Tips.TextStyle;
++	TooltipAnchor->bOverrideTooltipDelay = Tips.bOverrideDelay;
++	TooltipAnchor->TooltipDelay = Tips.Delay;
++	TooltipAnchor->bOverrideTooltipPosition = Tips.bOverridePositioning;
++	TooltipAnchor->TooltipPositioning = Tips.Positioning;
++	// A row's tooltip must never close the menu it is in (a template may say Close Other Cards).
++	TooltipAnchor->SetKeepsOtherCardsOpen(true);
++	TooltipAnchor->SetTooltipCardText(bAsCard ? Entry.Description : FText::GetEmpty(), FText::GetEmpty());
++}
++
+ bool UContextMenuEntryWidget::OpenSubmenu(bool bFocusFirstEntry)
+ {
+ 	if (!SubmenuAnchor || !IsSelectable())
+@@ -535,6 +1110,10 @@ void UContextMenuEntryWidget::ApplyStateLook()
+ 	{
+ 		LabelText->SetColorAndOpacity(LabelColor);
+ 	}
++	if (CenterText)
++	{
++		CenterText->SetColorAndOpacity(LabelColor);
++	}
+ 
+ 	const FSlateColor ShortcutColor = !bEnabled ? EntryStyle.DisabledLabelColor : (bShowHighlightColors ? EntryStyle.HighlightedLabelColor : EntryStyle.ShortcutColor);
+ 	if (RightText)
+@@ -545,13 +1124,58 @@ void UContextMenuEntryWidget::ApplyStateLook()
+ 	{
+ 		ShortcutText->SetColorAndOpacity(ShortcutColor);
+ 	}
++	for (UTextBlock* KeyText : BindingTextParts)
++	{
++		if (KeyText)
++		{
++			KeyText->SetColorAndOpacity(ShortcutColor);
++		}
++	}
++	for (UTextBlock* Delimiter : IconDelimiterParts)
++	{
++		if (Delimiter)
++		{
++			Delimiter->SetColorAndOpacity(ShortcutColor);
++		}
++	}
+ 
+ 	const FLinearColor IconTint = !bEnabled ? EntryStyle.DisabledIconTint : (bShowHighlightColors ? EntryStyle.HighlightedIconTint : EntryStyle.IconTint);
+-	ApplyIcon(LeftIcon, Entry.LeftIcon, IconTint);
+-	ApplyIcon(CenterIcon, Entry.CenterIcon, IconTint);
+-	ApplyIcon(RightIcon, Entry.RightIcon, IconTint);
++
++	// Each list's parts take its set icons in order (unset elements were skipped when the parts were made).
++	auto ApplyIconList = [this, &IconTint](const TArray<TObjectPtr<UWidget>>& PartList, const TArray<FContextMenuIcon>& Icons)
++	{
++		int32 PartIndex = 0;
++		for (const FContextMenuIcon& Icon : Icons)
++		{
++			if (Icon.IsSet() && PartList.IsValidIndex(PartIndex))
++			{
++				ApplyIcon(PartList[PartIndex++], Icon, IconTint);
++			}
++		}
++	};
++	if (Entry.CheckType == EContextMenuCheckType::None || !bBuiltNativeTree)
++	{
++		ApplyIconList(LeftIconParts, Entry.LeftIcons);
++	}
++	ApplyIconList(CenterIconParts, Entry.CenterIcons);
++	ApplyIconList(RightIconParts, Entry.RightIcons);
+ 	ApplyIcon(SubmenuArrow, EntryStyle.SubmenuArrow, IconTint);
+ 
++	// Key art keeps its own colours (its glyph's tint); a disabled row fades it like its icons.
++	for (int32 Index = 0; Index < BindingImageParts.Num(); ++Index)
++	{
++		const FLinearColor ArtTint = BindingImageTints.IsValidIndex(Index) ? BindingImageTints[Index] : FLinearColor::White;
++		const FLinearColor Faded = ArtTint * FLinearColor(1.f, 1.f, 1.f, bEnabled ? 1.f : EntryStyle.DisabledIconTint.A);
++		if (UImage* AsImage = Cast<UImage>(BindingImageParts[Index]))
++		{
++			AsImage->SetColorAndOpacity(Faded);
++		}
++		else if (UWidgetSVGImage* AsSVG = Cast<UWidgetSVGImage>(BindingImageParts[Index]))
++		{
++			AsSVG->SetColorAndOpacity(Faded);
++		}
++	}
++
+ 	if (CheckMark)
+ 	{
+ 		const FContextMenuIcon& Mark = Entry.CheckType == EContextMenuCheckType::Radio ? EntryStyle.RadioMark : EntryStyle.CheckMark;
+@@ -850,17 +1474,17 @@ void UContextMenuWidget::BuildRows()
+ 			{
+ 				Row.Entry.RightText = TagData->ButtonText_Right;
+ 			}
+-			if (!Row.Entry.LeftIcon.IsSet())
++			if (Row.Entry.LeftIcons.IsEmpty())
+ 			{
+-				Row.Entry.LeftIcon = ContextMenuWidgetPrivate::IconFromTagChoices(TagData->LeftIcons);
++				Row.Entry.LeftIcons = ContextMenuWidgetPrivate::IconsFromTagChoices(TagData->LeftIcons);
+ 			}
+-			if (!Row.Entry.CenterIcon.IsSet())
++			if (Row.Entry.CenterIcons.IsEmpty())
+ 			{
+-				Row.Entry.CenterIcon = ContextMenuWidgetPrivate::IconFromTagChoices(TagData->CenterIcons);
++				Row.Entry.CenterIcons = ContextMenuWidgetPrivate::IconsFromTagChoices(TagData->CenterIcons);
+ 			}
+-			if (!Row.Entry.RightIcon.IsSet())
++			if (Row.Entry.RightIcons.IsEmpty())
+ 			{
+-				Row.Entry.RightIcon = ContextMenuWidgetPrivate::IconFromTagChoices(TagData->RightIcons);
++				Row.Entry.RightIcons = ContextMenuWidgetPrivate::IconsFromTagChoices(TagData->RightIcons);
+ 			}
+ 		}
+ 	}
+@@ -895,10 +1519,17 @@ void UContextMenuWidget::BuildRows()
+ 		}
+ 	}
+ 
+-	const bool bReserveIconColumn = MenuStyle.bAlwaysReserveIconColumn || Prepared.ContainsByPredicate([](const FPreparedRow& Row)
++	// The left icon column is as many icons wide as the row with the most (a check mark counts as one), so every label starts
++	// at the same place and moves along for all of them once a row has more.
++	int32 LeftColumnIcons = MenuStyle.bAlwaysReserveIconColumn ? 1 : 0;
++	for (const FPreparedRow& Row : Prepared)
+ 	{
+-		return Row.Entry.LeftIcon.IsSet() || Row.Entry.CheckType != EContextMenuCheckType::None;
+-	});
++		const bool bButtonLike = Row.Entry.EntryType == EContextMenuEntryType::Button || Row.Entry.EntryType == EContextMenuEntryType::Submenu;
++		if (bButtonLike)
++		{
++			LeftColumnIcons = FMath::Max(LeftColumnIcons, Row.Entry.CheckType != EContextMenuCheckType::None ? 1 : Row.Entry.CountLeftIcons());
++		}
++	}
+ 
+ 	for (int32 Index = 0; Index < Prepared.Num(); ++Index)
+ 	{
+@@ -923,12 +1554,17 @@ void UContextMenuWidget::BuildRows()
+ 		}
+ #endif
+ 
+-		RowWidget->SetupEntry(Row.Entry, MenuStyle, this, EntryWidgets.Num(), bReserveIconColumn, Row.Actions, Row.TagActions);
++		RowWidget->SetupEntry(Row.Entry, MenuStyle, this, EntryWidgets.Num(), LeftColumnIcons, Row.Actions, Row.TagActions);
+ 
+ 		UPanelSlot* RowSlot = EntriesBox->AddChild(RowWidget);
+ 		if (UVerticalBoxSlot* AsVerticalSlot = Cast<UVerticalBoxSlot>(RowSlot))
+ 		{
+ 			AsVerticalSlot->SetHorizontalAlignment(HAlign_Fill);
++			// Highlight Inset: the button rows' highlights stop short of the panel (Panel Padding) by this much more.
++			if (!bIsDivider && Row.Entry.EntryType != EContextMenuEntryType::Spacer)
++			{
++				AsVerticalSlot->SetPadding(MenuStyle.RowHighlightInset);
++			}
+ 		}
+ 		EntryWidgets.Add(RowWidget);
+ 	}
+@@ -1132,6 +1768,16 @@ void UContextMenuWidget::HandleEntryChosen(UContextMenuEntryWidget* Row, bool bF
+ 		MenuAnchor->NotifyMenuEntryChosen(ChosenEntry.EntryId, bNowChecked);
+ 	}
+ 
++	// An attached menu that opens on press: the row has run, its menu opens beside it, and this menu stays for it.
++	if (ChosenEntry.HasAttachedMenu() && ChosenEntry.AttachedMenuOpenOn == EContextMenuAttachedMenuTrigger::Press)
++	{
++		if (WeakMenu.IsValid() && WeakRow.IsValid())
++		{
++			WeakRow->OpenSubmenu(bFromKeyboard);
++		}
++		return;
++	}
++
+ 	if (WeakMenu.IsValid() && ChosenEntry.bCloseMenuOnClick)
+ 	{
+ 		CloseWholeMenu();
+@@ -1299,7 +1945,7 @@ FReply UContextMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FK
+ 	if (Key == EKeys::Right || Key == EKeys::Gamepad_DPad_Right)
+ 	{
+ 		const int32 Focused = GetFocusedRowIndex();
+-		if (EntryWidgets.IsValidIndex(Focused) && EntryWidgets[Focused]->GetEntry().EntryType == EContextMenuEntryType::Submenu)
++		if (EntryWidgets.IsValidIndex(Focused) && EntryWidgets[Focused]->OpensMenuBeside())
+ 		{
+ 			EntryWidgets[Focused]->OpenSubmenu(/*bFocusFirstEntry=*/true);
+ 		}
+@@ -1322,7 +1968,7 @@ FReply UContextMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FK
+ 		const FInputChord Pressed(Key, InKeyEvent.IsShiftDown(), InKeyEvent.IsControlDown(), InKeyEvent.IsAltDown(), InKeyEvent.IsCommandDown());
+ 		for (const TObjectPtr<UContextMenuEntryWidget>& Row : EntryWidgets)
+ 		{
+-			if (Row && Row->IsSelectable() && Row->GetEntry().Shortcut.IsValidChord() && Row->GetEntry().Shortcut == Pressed)
++			if (Row && Row->IsSelectable() && Row->MatchesShortcut(Pressed))
+ 			{
+ 				HandleEntryChosen(Row, /*bFromKeyboard=*/true);
+ 				return FReply::Handled();
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuWidget.h b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuWidget.h
+index 3f2cb72..573c2da 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuWidget.h
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuWidget.h
+@@ -21,6 +21,8 @@ class UPanelWidget;
+ class UScrollBox;
+ class USizeBox;
+ class UTextBlock;
++class UTooltipCardAnchor;
++struct FMenuImage;
+ 
+ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FContextMenuEntryChosenSignature, FName, EntryId, bool, bIsChecked);
+ 
+@@ -31,10 +33,15 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FContextMenuEntryChosenSignature, F
+  * The C++ class builds its own parts. Make a Widget Blueprint from it (and pick it as the style's Entry Widget Class) to lay a
+  * row out yourself; it then builds nothing and fills the parts it finds by name, all optional:
+  *   RowButton (Context Menu Button: clicks, focus, states), RowHighlight (Border: the style's highlight / pressed brush),
+- *   LabelText, RightText, ShortcutText, HeaderText (Text Blocks), LeftIcon, CenterIcon, RightIcon, CheckMark, SubmenuArrow
+- *   (Image or SVG Image: shown, hidden and tinted), DividerLine (any widget: shown for dividers), SubmenuAnchor (Info Card
+- *   Anchor around RowButton, for submenus).
++ *   LabelText, CenterText, RightText, ShortcutText, HeaderText (Text Blocks), LeftIcon, CenterIcon, RightIcon (the first
++ *   icon of each list; LeftIcon_1, LeftIcon_2... take the next ones), CheckMark, SubmenuArrow (Image or SVG Image: shown,
++ *   hidden and tinted), BindingsBox (a panel the shortcuts' keys are built into when they are drawn as art or framed; without
++ *   one, ShortcutText shows them as text), DividerLine (any widget: shown for dividers), SubmenuAnchor (Info Card Anchor
++ *   around RowButton, for submenus and attached menus), TooltipAnchor (Tooltip Card Anchor around RowButton, for the style's
++ *   Tooltip Card row tooltips).
+  * The native parts carry the same names, so a Row Button Preset's Shape and Design Targets can aim at LabelText, LeftIcon...
++ * The style's alignment options (content, label / center / right / shortcut text, Text Dividers) lay out the native parts; a
++ * Widget Blueprint row keeps its own layout.
+  * On Menu Entry Set and On Highlight Changed are there for anything else a Widget Blueprint wants to do.
+  */
+ UCLASS(Blueprintable, meta = (DisplayName = "Context Menu Entry Widget"))
+@@ -46,11 +53,20 @@ public:
+ 
+ 	/**
+ 	 * Builds (C++ class) or fills (Widget Blueprint) the row for InEntry. Actions are the entry's actions already copied for
+-	 * this menu; TagActions those of its Button Tag. bReserveIconColumn keeps the left icon column even when this row has
+-	 * no icon, so labels line up.
++	 * this menu; TagActions those of its Button Tag. LeftColumnIcons: how many icons wide the left icon column is (the most
++	 * any row of the menu has; 0: none), kept even when this row has fewer, so labels line up.
+ 	 */
+ 	void SetupEntry(const FContextMenuEntry& InEntry, const FContextMenuStyle& InStyle, UContextMenuWidget* InMenu, int32 InIndex,
+-		bool bReserveIconColumn, const TArray<UButtonAction*>& InActions, const TArray<UButtonAction*>& InTagActions);
++		int32 LeftColumnIcons, const TArray<UButtonAction*>& InActions, const TArray<UButtonAction*>& InTagActions);
++
++	/** The width of a left icon column InIconCount icons wide in InStyle (icon size, gaps, delimiters). */
++	static float GetIconColumnWidth(const FContextMenuStyle& InStyle, int32 InIconCount);
++
++	/** Whether a key press chooses this row: its Shortcut, More Shortcuts, Gamepad Shortcut or Shortcut Input Action's keys. */
++	bool MatchesShortcut(const FInputChord& Pressed) const;
++
++	/** The bindings this row shows (or answers to), each a list of keys: Ctrl, C. bForDisplay: the style's device rules apply. */
++	void GatherBindings(TArray<TArray<FKey>>& OutBindings, bool bForDisplay) const;
+ 
+ 	UFUNCTION(BlueprintPure, Category = "Context Menu")
+ 	const FContextMenuEntry& GetEntry() const { return Entry; }
+@@ -89,12 +105,15 @@ public:
+ 	UFUNCTION(BlueprintPure, Category = "Context Menu")
+ 	bool IsHighlighted() const { return bHighlighted; }
+ 
+-	/** Submenu rows: opens the submenu now (bFocusFirstEntry: with its first row focused, for keyboard and gamepad). */
++	/** Submenu rows and rows with an Attached Menu: opens it now (bFocusFirstEntry: with its first row focused, for keyboard and gamepad). */
+ 	bool OpenSubmenu(bool bFocusFirstEntry);
+ 
+-	/** Submenu rows: the open submenu, or null. */
++	/** Submenu rows and rows with an Attached Menu: the open one, or null. */
+ 	UContextMenuWidget* GetOpenSubmenu() const;
+ 
++	/** A row that opens a menu beside it: a Submenu, or a Button with an Attached Menu. */
++	bool OpensMenuBeside() const { return Entry.EntryType == EContextMenuEntryType::Submenu || Entry.HasAttachedMenu(); }
++
+ 	/** The entry's own actions (copied for this menu) and those of its Button Tag. */
+ 	const TArray<TObjectPtr<UButtonAction>>& GetRowActions() const { return RowActions; }
+ 	const TArray<TObjectPtr<UButtonAction>>& GetRowTagActions() const { return RowTagActions; }
+@@ -128,6 +147,9 @@ protected:
+ 	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
+ 	TObjectPtr<UTextBlock> LabelText;
+ 
++	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
++	TObjectPtr<UTextBlock> CenterText;
++
+ 	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
+ 	TObjectPtr<UTextBlock> RightText;
+ 
+@@ -137,6 +159,9 @@ protected:
+ 	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
+ 	TObjectPtr<UTextBlock> HeaderText;
+ 
++	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
++	TObjectPtr<UPanelWidget> BindingsBox;
++
+ 	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
+ 	TObjectPtr<UWidget> LeftIcon;
+ 
+@@ -158,6 +183,9 @@ protected:
+ 	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
+ 	TObjectPtr<UInfoCardAnchor> SubmenuAnchor;
+ 
++	UPROPERTY(BlueprintReadOnly, Category = "Context Menu", meta = (BindWidgetOptional))
++	TObjectPtr<UTooltipCardAnchor> TooltipAnchor;
++
+ 	/** The entry as shown (after overrides, Button Tag text and icons, action checks). */
+ 	UPROPERTY(BlueprintReadOnly, Category = "Context Menu")
+ 	FContextMenuEntry Entry;
+@@ -168,6 +196,28 @@ protected:
+ 	UPROPERTY(Transient)
+ 	TArray<TObjectPtr<UButtonAction>> RowTagActions;
+ 
++	/** Every icon of each list, in order (the first is LeftIcon / CenterIcon / RightIcon), and the delimiters between them. */
++	UPROPERTY(Transient)
++	TArray<TObjectPtr<UWidget>> LeftIconParts;
++
++	UPROPERTY(Transient)
++	TArray<TObjectPtr<UWidget>> CenterIconParts;
++
++	UPROPERTY(Transient)
++	TArray<TObjectPtr<UWidget>> RightIconParts;
++
++	UPROPERTY(Transient)
++	TArray<TObjectPtr<UTextBlock>> IconDelimiterParts;
++
++	/** The shortcuts' parts built into BindingsBox: key names, delimiters and separators; key art and its own tint. */
++	UPROPERTY(Transient)
++	TArray<TObjectPtr<UTextBlock>> BindingTextParts;
++
++	UPROPERTY(Transient)
++	TArray<TObjectPtr<UWidget>> BindingImageParts;
++
++	TArray<FLinearColor> BindingImageTints;
++
+ 	TWeakObjectPtr<UContextMenuWidget> OwningMenu;
+ 	FContextMenuStyle EntryStyle;
+ 	int32 EntryIndex = INDEX_NONE;
+@@ -176,20 +226,35 @@ protected:
+ 	bool bPressedLook = false;
+ 	bool bUsesRowPreset = false;
+ 
++	/** The C++ class built this row's parts (the style's alignment options apply); false for a Widget Blueprint's own. */
++	bool bBuiltNativeTree = false;
++
+ private:
+ 
+-	void BuildNativeTree(bool bReserveIconColumn);
+-	UWidget* BuildButtonRow(bool bReserveIconColumn);
++	void BuildNativeTree(int32 LeftColumnIcons);
++	UWidget* BuildButtonRow(int32 LeftColumnIcons);
+ 	UWidget* BuildDividerRow();
+ 
+ 	/** A Size Box of the style's icon size holding an Image or SVG Image for Icon (or a text glyph when Icon is unset and Glyph isn't empty). */
+ 	UWidget* MakeIconPart(const FContextMenuIcon& Icon, FName PartName, const TCHAR* Glyph, TObjectPtr<UWidget>& OutPart);
+ 
++	/** A Horizontal Box of an icon part per set icon (named Base, Base_1...), Icon Gap and Icon Delimiter between them. */
++	UWidget* MakeIconList(const TArray<FContextMenuIcon>& Icons, const TCHAR* Base, TArray<TObjectPtr<UWidget>>& OutParts);
++
+ 	/** A line for dividers and text dividers. */
+ 	UWidget* MakeLine(FName PartName);
+ 
++	/** A Text Block in the binding font, kept for the state colours. */
++	UTextBlock* MakeBindingText(const FText& InText);
++
++	/** An Image or SVG Image of a key's art, Glyph Height tall. */
++	UWidget* MakeGlyphImage(const FMenuImage& Art);
++
+ 	void FillParts();
++	void FillIconParts();
++	void FillBindings();
+ 	void SetupSubmenuAnchor();
++	void SetupTooltip();
+ 	void ApplyStateLook();
+ 	void ApplyIcon(UWidget* Part, const FContextMenuIcon& Icon, const FLinearColor& StateTint) const;
+ 	void TintIcon(UWidget* Part, const FContextMenuIcon& Icon, const FLinearColor& StateTint) const;
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTypes.cpp b/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTypes.cpp
+index aa3b2b4..aca2478 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTypes.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTypes.cpp
+@@ -268,3 +268,60 @@ void FInfoCardAdditiveAnimations::PostSerialize(const FArchive& Ar)
+ 	Migrate(PlayInAnimations, PlayIn);
+ 	Migrate(PlayOutAnimations, PlayOut);
+ }
++
++// =================================================================================================
++// FInfoCardPositioning
++// =================================================================================================
++
++void FInfoCardPositioning::ApplyTo(FInfoCardSpec& Spec, bool bFromKeyboard) const
++{
++	// A key or a gamepad opening has no click to open at: beside the widget instead.
++	const bool bBesideWidget = PositionMode == EInfoCardPosition::ToCursor && bFromKeyboard;
++	Spec.PositionMode = bBesideWidget ? EInfoCardPosition::ToIcon : PositionMode;
++	Spec.IconPosition = bBesideWidget ? KeyboardIconPosition : IconPosition;
++	Spec.FillIconPadding = FillIconPadding;
++	Spec.IconAnchorPadding = IconAnchorPadding;
++	Spec.CursorPosition = CursorPosition;
++	Spec.ViewportPosition = ViewportPosition;
++	Spec.CardOffset = CardOffset;
++	Spec.bClampToViewport = bClampToViewport;
++	Spec.FlipToAvoidClipping.Source = EInfoCardValueSource::Custom;
++	Spec.FlipToAvoidClipping.CustomValue = bFlipToAvoidClipping;
++	Spec.ClampPadding = ClampPadding;
++	Spec.bAvoidOverlappingCards = bAvoidOverlappingCards;
++	// At the cursor a menu stays where it opened unless asked to follow; beside a widget it follows the widget, as cards do.
++	Spec.bUpdatePositionOnTick = Spec.PositionMode == EInfoCardPosition::ToCursor ? bFollowCursor : true;
++	Spec.CardTransform = CardTransform;
++}
++
++FInfoCardPositioning FInfoCardPositioning::FromSpec(const FInfoCardSpec& Spec)
++{
++	FInfoCardPositioning Out;
++	Out.PositionMode = Spec.PositionMode;
++	Out.IconPosition = Spec.IconPosition;
++	Out.FillIconPadding = Spec.FillIconPadding;
++	Out.IconAnchorPadding = Spec.IconAnchorPadding;
++	Out.CursorPosition = Spec.CursorPosition;
++	Out.ViewportPosition = Spec.ViewportPosition;
++	Out.CardOffset = Spec.CardOffset;
++	Out.bClampToViewport = Spec.bClampToViewport;
++	Out.bFlipToAvoidClipping = Spec.FlipToAvoidClipping.Resolve(EInfoCardConfigurableBoolKind::FlipToAvoidClipping);
++	Out.ClampPadding = Spec.ClampPadding;
++	Out.bAvoidOverlappingCards = Spec.bAvoidOverlappingCards;
++	Out.bFollowCursor = Spec.bUpdatePositionOnTick;
++	Out.CardTransform = Spec.CardTransform;
++	return Out;
++}
++
++FInfoCardPositioning FInfoCardPositioning::MakeBeside(EDirection2D Side, float Gap)
++{
++	FInfoCardPositioning Beside;
++	Beside.PositionMode = EInfoCardPosition::ToIcon;
++	Beside.IconPosition = Side;
++	Beside.IconAnchorPadding = Gap;
++	Beside.bClampToViewport = true;
++	Beside.bFlipToAvoidClipping = true;
++	// As an Info Card entry's default; a menu beside a row slides clear of the rest of its chain rather than covering it.
++	Beside.bAvoidOverlappingCards = true;
++	return Beside;
++}
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTypes.h b/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTypes.h
+index c385052..c85227e 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTypes.h
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTypes.h
+@@ -806,4 +806,92 @@ struct NAMETBD_API FInfoCardSpec
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Instanced, Category = "Payloads")
+ 	TArray<TObjectPtr<UNameTBD_Payload>> Payloads;
+ 
++};
++
++/**
++ * Where a card opens - the placement fields of an Info Card entry (FInfoCardSpec, Placement) in one struct, for the widgets
++ * that build their cards themselves: beside the widget (To Icon), at the cursor (To Cursor) or at a corner of the screen
++ * (To Viewport). Used by the Context Menu Style (menus, row tooltips), Context Menu Anchors' Override Positioning, Button
++ * rows' attached menus and Tooltip Card Anchors' Position.
++ */
++USTRUCT(BlueprintType)
++struct NAMETBD_API FInfoCardPositioning
++{
++	GENERATED_BODY()
++
++	/** To Cursor: where the click landed. To Icon: beside the widget (a dropdown, a flyout). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Position Mode"))
++	EInfoCardPosition PositionMode = EInfoCardPosition::ToCursor;
++
++	/** Which side of the widget the card opens on. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon", EditConditionHides))
++	EDirection2D IconPosition = EDirection2D::Down;
++
++	/** Fill Icon: the inset from each edge of the widget. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon && IconPosition == EDirection2D::FillIcon", EditConditionHides))
++	FMargin FillIconPadding = FMargin(0.f);
++
++	/** The gap between the widget and the card. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Icon Anchor Padding", EditCondition = "PositionMode == EInfoCardPosition::ToIcon", EditConditionHides, UIMin = "0", UIMax = "32", ForceUnits = "px"))
++	float IconAnchorPadding = 2.f;
++
++	/** Which way from the cursor the card opens. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
++	EInfoCardCursorPosition CursorPosition = EInfoCardCursorPosition::DownRight;
++
++	/**
++	 * A To Cursor card opened from a key or a gamepad (a context menu's Open Context Menu with Focus First Entry) has no cursor
++	 * spot to open at: it opens beside the widget instead, on this side.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "From Keyboard", EditCondition = "PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
++	EDirection2D KeyboardIconPosition = EDirection2D::Down;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToViewport", EditConditionHides))
++	EViewportPosition ViewportPosition = EViewportPosition::TopRight;
++
++	/** Moves the card from the cursor or the screen corner. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor || PositionMode == EInfoCardPosition::ToViewport", EditConditionHides))
++	FVector2D CardOffset = FVector2D(2.f, 2.f);
++
++	/** Keeps the whole card on screen. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Clamp To Viewport"))
++	bool bClampToViewport = true;
++
++	/** A card that would run off the screen opens on the other side first (left of the cursor, above the widget). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Flip To Avoid Clipping", EditCondition = "bClampToViewport && PositionMode != EInfoCardPosition::ToViewport", EditConditionHides))
++	bool bFlipToAvoidClipping = true;
++
++	/** Room kept between the card and the screen's edge. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "bClampToViewport", EditConditionHides, ClampMin = "0", UIMax = "64", ForceUnits = "px"))
++	float ClampPadding = 8.f;
++
++	/**
++	 * Moves away from other cards on screen, and keeps a card beside a menu row off the rest of its menu chain. Off: the card
++	 * stays exactly where it opened.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Avoid Overlapping Cards"))
++	bool bAvoidOverlappingCards = false;
++
++	/**
++	 * Keeps moving with the cursor while open. Off: the card stays where it opened, as desktop menus do. (To Icon and To
++	 * Viewport cards always follow their widget / the screen.)
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Follow Cursor", EditCondition = "PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
++	bool bFollowCursor = false;
++
++	/** The card widget's own render transform, on top of where it was placed. Visual only. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (AdvancedDisplay))
++	FWidgetTransform CardTransform;
++
++	/** Writes these into an info card entry. bFromKeyboard: the opening came from a key (To Cursor goes beside the widget). */
++	void ApplyTo(FInfoCardSpec& Spec, bool bFromKeyboard = false) const;
++
++	/** An entry's placement as these fields (Follow Cursor from its per-tick update; From Keyboard left Down). */
++	static FInfoCardPositioning FromSpec(const FInfoCardSpec& Spec);
++
++	/**
++	 * Beside the widget on Side, Gap away, following it, flipping and clamping, clear of other cards: a tooltip's placement
++	 * (Up), a submenu's and an attached menu's (Right).
++	 */
++	static FInfoCardPositioning MakeBeside(EDirection2D Side, float Gap);
+ };
+\ No newline at end of file
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/TooltipCardAnchor.cpp b/Plugins/NameTBD/Source/NameTBD/Cards/TooltipCardAnchor.cpp
+index 4ed8722..ee82758 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/TooltipCardAnchor.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/TooltipCardAnchor.cpp
+@@ -144,8 +144,19 @@ bool UTooltipCardAnchor::BuildGeneratedInfoCards(TArray<FInfoCardSpec>& OutSpecs
+ 
+ 	if (bOverrideTooltipPosition)
+ 	{
+-		Spec.PositionMode = EInfoCardPosition::ToIcon;
+-		Spec.IconPosition = TooltipPosition;
++		TooltipPositioning.ApplyTo(Spec);
++	}
++#if WITH_EDITOR
++	else if (IsDesignTime())
++	{
++		// An override not switched on shows the template's placement, so switching it on starts from there.
++		TooltipPositioning = FInfoCardPositioning::FromSpec(Spec);
++	}
++#endif
++
++	if (bKeepsOtherCardsOpen)
++	{
++		Spec.CloseOtherCardsScope = ECardCloseOthersScope::None;
+ 	}
+ 
+ 	if (bOverrideTooltipDelay)
+@@ -164,6 +175,24 @@ bool UTooltipCardAnchor::BuildGeneratedInfoCards(TArray<FInfoCardSpec>& OutSpecs
+ 	return true;
+ }
+ 
++void UTooltipCardAnchor::PostLoad()
++{
++	Super::PostLoad();
++
++#if WITH_EDITORONLY_DATA
++	// The old override only chose the side (To Icon), keeping the rest of the template's placement: the rest is taken from
++	// this anchor's own template when it has one (already loaded with it), else from the built-in tooltip.
++	if (bOverrideTooltipPosition && TooltipPosition_DEPRECATED != EDirection2D::Up)
++	{
++		const FInfoCardSpec* TemplateSpec = TooltipTemplate && TooltipTemplate->InfoCards.Num() > 0 ? &TooltipTemplate->InfoCards[0] : nullptr;
++		TooltipPositioning = FInfoCardPositioning::FromSpec(TemplateSpec ? *TemplateSpec : MakeBuiltInTooltipSpec());
++		TooltipPositioning.PositionMode = EInfoCardPosition::ToIcon;
++		TooltipPositioning.IconPosition = TooltipPosition_DEPRECATED;
++	}
++	TooltipPosition_DEPRECATED = EDirection2D::Up;
++#endif
++}
++
+ void UTooltipCardAnchor::SetTooltipCardText(FText NewText, FText NewTitle)
+ {
+ 	TooltipBodyText = NewText;
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/TooltipCardAnchor.h b/Plugins/NameTBD/Source/NameTBD/Cards/TooltipCardAnchor.h
+index ddc27ae..b1913de 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/TooltipCardAnchor.h
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/TooltipCardAnchor.h
+@@ -52,9 +52,13 @@ public:
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tooltip", AdvancedDisplay, meta = (InlineEditConditionToggle))
+ 	bool bOverrideTooltipPosition = false;
+ 
+-	/** Where this tooltip sits around the widget, instead of the template's. */
++	/**
++	 * Where this tooltip opens, instead of the template's - every placement an Info Card entry has: beside the widget (To
++	 * Icon: side, gap), at the cursor (To Cursor: corner, offset, follow), at a screen corner, clamping, flipping, overlap
++	 * avoidance, a render transform. Off: shows the template's.
++	 */
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tooltip", AdvancedDisplay, meta = (DisplayName = "Position", EditCondition = "bOverrideTooltipPosition"))
+-	EDirection2D TooltipPosition = EDirection2D::Up;
++	FInfoCardPositioning TooltipPositioning = FInfoCardPositioning::MakeBeside(EDirection2D::Up, 6.f);
+ 
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tooltip", AdvancedDisplay, meta = (InlineEditConditionToggle))
+ 	bool bOverrideTooltipDelay = false;
+@@ -93,6 +97,14 @@ public:
+ 	/** The built-in tooltip entry, before text: what a Tooltip Card Anchor uses with no template anywhere. */
+ 	static FInfoCardSpec MakeBuiltInTooltipSpec();
+ 
++	/**
++	 * Leaves other cards open when this tooltip shows, whatever its template's Close Other Cards Scope says (a menu row's
++	 * tooltip must not close its menu). Not saved: for anchors built in code.
++	 */
++	void SetKeepsOtherCardsOpen(bool bKeep) { bKeepsOtherCardsOpen = bKeep; }
++
++	virtual void PostLoad() override;
++
+ protected:
+ 
+ 	virtual bool UsesGeneratedInfoCards() const override { return true; }
+@@ -100,6 +112,15 @@ protected:
+ 
+ 	/** The template in force: this anchor's, else the project's (loaded on first use). */
+ 	const UInfoCardDataAsset* ResolveTemplate() const;
++
++	bool bKeepsOtherCardsOpen = false;
++
++#if WITH_EDITORONLY_DATA
++	// The side-only Position from before it took every placement field. Loaded from old anchors through CoreRedirects
++	// (Config/DefaultNameTBD.ini), turned into Tooltip Positioning in PostLoad, never saved again (CPF_Deprecated).
++	UPROPERTY()
++	EDirection2D TooltipPosition_DEPRECATED = EDirection2D::Up;
++#endif
+ };
+ 
+ /** Blueprint helpers for giving widgets info cards and tooltips without setting up an anchor by hand. */
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIJson.cpp b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIJson.cpp
+index 77b0d6a..ff66f2e 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIJson.cpp
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIJson.cpp
+@@ -278,6 +278,11 @@ namespace NameTBDAIJson
+ 		const FString Key = Normalize(Name);
+ 		TArray<FProperty*> Starts;
+ 		TArray<FProperty*> Contains;
++
++		// Exact matches by rank, whatever order the fields come in: the property's own name, then its display name, then a
++		// bool without its b. A shape's "Fill" is its Fill paint, not bFill (whose display name is also "Fill").
++		FProperty* ByDisplay = nullptr;
++		FProperty* ByBareBool = nullptr;
+ 		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+ 		{
+ 			FProperty* Property = *It;
+@@ -288,10 +293,18 @@ namespace NameTBDAIJson
+ 			const FString Own = Normalize(Property->GetAuthoredName());
+ 			FString Display = Normalize(Property->GetMetaData(TEXT("DisplayName")));
+ 			const bool bBool = CastField<FBoolProperty>(Property) != nullptr;
+-			if (Own == Key || (!Display.IsEmpty() && Display == Key) || (bBool && Own.StartsWith(TEXT("b")) && Own.Mid(1) == Key))
++			if (Own == Key)
+ 			{
+ 				return Property;
+ 			}
++			if (!ByDisplay && !Display.IsEmpty() && Display == Key)
++			{
++				ByDisplay = Property;
++			}
++			if (!ByBareBool && bBool && Own.StartsWith(TEXT("b")) && Own.Mid(1) == Key)
++			{
++				ByBareBool = Property;
++			}
+ 			const FString Bare = bBool && Own.StartsWith(TEXT("b")) ? Own.Mid(1) : Own;
+ 			if (Key.Len() >= 3 && (Bare.StartsWith(Key) || (!Display.IsEmpty() && Display.StartsWith(Key))))
+ 			{
+@@ -302,6 +315,10 @@ namespace NameTBDAIJson
+ 				Contains.Add(Property);
+ 			}
+ 		}
++		if (ByDisplay || ByBareBool)
++		{
++			return ByDisplay ? ByDisplay : ByBareBool;
++		}
+ 		if (Starts.Num() == 1)
+ 		{
+ 			return Starts[0];
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/InfoCardDetails.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/InfoCardDetails.cpp
+index 5efefe5..5d8a245 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/InfoCardDetails.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/InfoCardDetails.cpp
+@@ -7,9 +7,11 @@
+ #include "DetailWidgetRow.h"
+ #include "IDetailChildrenBuilder.h"
+ #include "IDetailGroup.h"
++#include "IDetailPropertyRow.h"
+ #include "Modules/ModuleManager.h"
+ #include "PropertyEditorModule.h"
+ #include "PropertyHandle.h"
++#include "Widgets/SBoxPanel.h"
+ #include "Widgets/Text/STextBlock.h"
+ 
+ #include "NameTBD/Cards/InfoCardAnchor.h"
+@@ -50,7 +52,7 @@ TSharedRef<IPropertyTypeCustomization> FInfoCardGroupedStructCustomization::Make
+ TSharedRef<IPropertyTypeCustomization> FInfoCardGroupedStructCustomization::MakeMenuEntryInstance()
+ {
+ 	FGroupLayout GroupLayout;
+-	GroupLayout.Order = { TEXT("Entry"), TEXT("Content"), TEXT("Action"), TEXT("State"), TEXT("Look") };
++	GroupLayout.Order = { TEXT("Entry"), TEXT("Content"), TEXT("Shortcut"), TEXT("Action"), TEXT("Attached Menu"), TEXT("State"), TEXT("Look") };
+ 	GroupLayout.StartExpanded = { TEXT("Content"), TEXT("Action") };
+ 	// The type and ID sit directly under the entry's title: they decide what the rest of it is.
+ 	GroupLayout.Ungrouped = { TEXT("Entry") };
+@@ -76,15 +78,6 @@ TSharedRef<IPropertyTypeCustomization> FInfoCardGroupedStructCustomization::Make
+ 	return MakeShared<FInfoCardGroupedStructCustomization>(GroupLayout);
+ }
+ 
+-TSharedRef<IPropertyTypeCustomization> FInfoCardGroupedStructCustomization::MakeEntryOverrideInstance()
+-{
+-	FGroupLayout GroupLayout;
+-	GroupLayout.Order = { TEXT("Entry") };
+-	GroupLayout.Ungrouped = { TEXT("Entry") };
+-	GroupLayout.Hidden = { GET_MEMBER_NAME_CHECKED(FContextMenuEntryOverride, EntryId) };
+-	return MakeShared<FInfoCardGroupedStructCustomization>(GroupLayout);
+-}
+-
+ void FInfoCardGroupedStructCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
+ {
+ 	// The name widget carries the array's Title Property (the Card ID, the Entry ID); the value widget its element buttons.
+@@ -168,6 +161,79 @@ void FInfoCardGroupedStructCustomization::CustomizeChildren(TSharedRef<IProperty
+ 	}
+ }
+ 
++// =================================================================================================
++// Entry Overrides
++// =================================================================================================
++
++TSharedRef<IPropertyTypeCustomization> FContextMenuEntryOverrideCustomization::MakeInstance()
++{
++	return MakeShared<FContextMenuEntryOverrideCustomization>();
++}
++
++bool FContextMenuEntryOverrideCustomization::IsKept() const
++{
++	bool bRemoved = false;
++	return !RemoveHandle.IsValid() || RemoveHandle->GetValue(bRemoved) != FPropertyAccess::Success || !bRemoved;
++}
++
++void FContextMenuEntryOverrideCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
++{
++	RemoveHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FContextMenuEntryOverride, bRemove));
++
++	// The Entry ID is the element's title (the array's Title Property); Remove sits right beside it.
++	HeaderRow
++		.NameContent()
++		[
++			PropertyHandle->CreatePropertyNameWidget()
++		]
++		.ValueContent()
++		[
++			SNew(SHorizontalBox)
++			+ SHorizontalBox::Slot()
++			.AutoWidth()
++			.VAlign(VAlign_Center)
++			[
++				RemoveHandle.IsValid() ? RemoveHandle->CreatePropertyValueWidget() : SNullWidget::NullWidget
++			]
++			+ SHorizontalBox::Slot()
++			.AutoWidth()
++			.VAlign(VAlign_Center)
++			.Padding(4.f, 0.f, 0.f, 0.f)
++			[
++				SNew(STextBlock)
++				.Text(LOCTEXT("RemoveEntry", "Remove"))
++				.Font(IDetailLayoutBuilder::GetDetailFont())
++				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
++				.ToolTipText(LOCTEXT("RemoveEntryTooltip", "Leaves this entry out of this widget's menu. To keep the row but grey it out, override Enabled instead."))
++			]
++		];
++}
++
++void FContextMenuEntryOverrideCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
++{
++	const TAttribute<bool> KeptAttribute = TAttribute<bool>::CreateSP(this, &FContextMenuEntryOverrideCustomization::IsKept);
++
++	uint32 ChildCount = 0;
++	PropertyHandle->GetNumChildren(ChildCount);
++	for (uint32 Index = 0; Index < ChildCount; ++Index)
++	{
++		const TSharedPtr<IPropertyHandle> Child = PropertyHandle->GetChildHandle(Index);
++		if (!Child.IsValid() || !Child->GetProperty())
++		{
++			continue;
++		}
++
++		// The ID is the title and Remove is in the header; every other field (each with its own override toggle) greys out
++		// while the entry is removed.
++		const FName ChildName = Child->GetProperty()->GetFName();
++		if (ChildName == GET_MEMBER_NAME_CHECKED(FContextMenuEntryOverride, EntryId) || ChildName == GET_MEMBER_NAME_CHECKED(FContextMenuEntryOverride, bRemove))
++		{
++			continue;
++		}
++		ChildBuilder.AddProperty(Child.ToSharedRef()).IsEnabled(KeptAttribute);
++	}
++}
++
+ // =================================================================================================
+ // Payload Defaults
+ // =================================================================================================
+@@ -292,7 +358,7 @@ namespace InfoCardDetails
+ 		PropertyModule.RegisterCustomPropertyTypeLayout(FName(TEXT("InfoCardAdditiveAnimationsOverride")),
+ 			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FInfoCardGroupedStructCustomization::MakeAnimationOverrideInstance));
+ 		PropertyModule.RegisterCustomPropertyTypeLayout(FName(TEXT("ContextMenuEntryOverride")),
+-			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FInfoCardGroupedStructCustomization::MakeEntryOverrideInstance));
++			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FContextMenuEntryOverrideCustomization::MakeInstance));
+ 		PropertyModule.RegisterCustomPropertyTypeLayout(FName(TEXT("InfoCardPayloadDefault")),
+ 			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FInfoCardPayloadDefaultCustomization::MakeInstance));
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/InfoCardDetails.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/InfoCardDetails.h
+index bc726f9..5e16246 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/InfoCardDetails.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/InfoCardDetails.h
+@@ -14,6 +14,8 @@
+  *     which were one long wall of fields. Rows hidden by name (a Card ID shown as the element's title) never appear.
+  *   - FInfoCardPayloadDefaultCustomization: an anchor's Payload Defaults element as its Card ID, the payload's type as plain
+  *     text, and the payload's own fields directly under it (Title, Body) - instead of Card ID row > class dropdown > object.
++ *   - FContextMenuEntryOverrideCustomization: an anchor's Entry Overrides element as its Entry ID with the Remove check box
++ *     beside it; the element's fields grey out while it is removed.
+  *   - FInfoCardGeneratedAnchorDetails: the Tooltip Card Anchor and Context Menu Anchor, which build their cards from their own
+  *     fields, with the generic anchor's sources hidden and their own category first.
+  */
+@@ -40,7 +42,6 @@ public:
+ 	static TSharedRef<IPropertyTypeCustomization> MakeMenuEntryInstance();
+ 	static TSharedRef<IPropertyTypeCustomization> MakeSettingsOverrideInstance();
+ 	static TSharedRef<IPropertyTypeCustomization> MakeAnimationOverrideInstance();
+-	static TSharedRef<IPropertyTypeCustomization> MakeEntryOverrideInstance();
+ 
+ 	virtual void CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
+ 	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
+@@ -60,6 +61,23 @@ public:
+ 	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
+ };
+ 
++class FContextMenuEntryOverrideCustomization : public IPropertyTypeCustomization
++{
++public:
++
++	static TSharedRef<IPropertyTypeCustomization> MakeInstance();
++
++	virtual void CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
++	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
++
++private:
++
++	/** The element's fields can be edited: it isn't removed (or several anchors disagree). */
++	bool IsKept() const;
++
++	TSharedPtr<IPropertyHandle> RemoveHandle;
++};
++
+ class FInfoCardGeneratedAnchorDetails : public IDetailCustomization
+ {
+ public:

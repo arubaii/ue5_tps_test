@@ -7,9 +7,11 @@
 #include "DetailWidgetRow.h"
 #include "IDetailChildrenBuilder.h"
 #include "IDetailGroup.h"
+#include "IDetailPropertyRow.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
 #include "PropertyHandle.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
 #include "NameTBD/Cards/InfoCardAnchor.h"
@@ -50,7 +52,7 @@ TSharedRef<IPropertyTypeCustomization> FInfoCardGroupedStructCustomization::Make
 TSharedRef<IPropertyTypeCustomization> FInfoCardGroupedStructCustomization::MakeMenuEntryInstance()
 {
 	FGroupLayout GroupLayout;
-	GroupLayout.Order = { TEXT("Entry"), TEXT("Content"), TEXT("Action"), TEXT("State"), TEXT("Look") };
+	GroupLayout.Order = { TEXT("Entry"), TEXT("Content"), TEXT("Shortcut"), TEXT("Action"), TEXT("Attached Menu"), TEXT("State"), TEXT("Look") };
 	GroupLayout.StartExpanded = { TEXT("Content"), TEXT("Action") };
 	// The type and ID sit directly under the entry's title: they decide what the rest of it is.
 	GroupLayout.Ungrouped = { TEXT("Entry") };
@@ -73,15 +75,6 @@ TSharedRef<IPropertyTypeCustomization> FInfoCardGroupedStructCustomization::Make
 	GroupLayout.Order = { TEXT("Info Card") };
 	GroupLayout.Ungrouped = { TEXT("Info Card") };
 	GroupLayout.Hidden = { GET_MEMBER_NAME_CHECKED(FInfoCardAdditiveAnimationsOverride, CardId) };
-	return MakeShared<FInfoCardGroupedStructCustomization>(GroupLayout);
-}
-
-TSharedRef<IPropertyTypeCustomization> FInfoCardGroupedStructCustomization::MakeEntryOverrideInstance()
-{
-	FGroupLayout GroupLayout;
-	GroupLayout.Order = { TEXT("Entry") };
-	GroupLayout.Ungrouped = { TEXT("Entry") };
-	GroupLayout.Hidden = { GET_MEMBER_NAME_CHECKED(FContextMenuEntryOverride, EntryId) };
 	return MakeShared<FInfoCardGroupedStructCustomization>(GroupLayout);
 }
 
@@ -165,6 +158,79 @@ void FInfoCardGroupedStructCustomization::CustomizeChildren(TSharedRef<IProperty
 		{
 			DetailGroup.ToggleExpansion(true);
 		}
+	}
+}
+
+// =================================================================================================
+// Entry Overrides
+// =================================================================================================
+
+TSharedRef<IPropertyTypeCustomization> FContextMenuEntryOverrideCustomization::MakeInstance()
+{
+	return MakeShared<FContextMenuEntryOverrideCustomization>();
+}
+
+bool FContextMenuEntryOverrideCustomization::IsKept() const
+{
+	bool bRemoved = false;
+	return !RemoveHandle.IsValid() || RemoveHandle->GetValue(bRemoved) != FPropertyAccess::Success || !bRemoved;
+}
+
+void FContextMenuEntryOverrideCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
+{
+	RemoveHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FContextMenuEntryOverride, bRemove));
+
+	// The Entry ID is the element's title (the array's Title Property); Remove sits right beside it.
+	HeaderRow
+		.NameContent()
+		[
+			PropertyHandle->CreatePropertyNameWidget()
+		]
+		.ValueContent()
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				RemoveHandle.IsValid() ? RemoveHandle->CreatePropertyValueWidget() : SNullWidget::NullWidget
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(4.f, 0.f, 0.f, 0.f)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("RemoveEntry", "Remove"))
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				.ToolTipText(LOCTEXT("RemoveEntryTooltip", "Leaves this entry out of this widget's menu. To keep the row but grey it out, override Enabled instead."))
+			]
+		];
+}
+
+void FContextMenuEntryOverrideCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
+{
+	const TAttribute<bool> KeptAttribute = TAttribute<bool>::CreateSP(this, &FContextMenuEntryOverrideCustomization::IsKept);
+
+	uint32 ChildCount = 0;
+	PropertyHandle->GetNumChildren(ChildCount);
+	for (uint32 Index = 0; Index < ChildCount; ++Index)
+	{
+		const TSharedPtr<IPropertyHandle> Child = PropertyHandle->GetChildHandle(Index);
+		if (!Child.IsValid() || !Child->GetProperty())
+		{
+			continue;
+		}
+
+		// The ID is the title and Remove is in the header; every other field (each with its own override toggle) greys out
+		// while the entry is removed.
+		const FName ChildName = Child->GetProperty()->GetFName();
+		if (ChildName == GET_MEMBER_NAME_CHECKED(FContextMenuEntryOverride, EntryId) || ChildName == GET_MEMBER_NAME_CHECKED(FContextMenuEntryOverride, bRemove))
+		{
+			continue;
+		}
+		ChildBuilder.AddProperty(Child.ToSharedRef()).IsEnabled(KeptAttribute);
 	}
 }
 
@@ -292,7 +358,7 @@ namespace InfoCardDetails
 		PropertyModule.RegisterCustomPropertyTypeLayout(FName(TEXT("InfoCardAdditiveAnimationsOverride")),
 			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FInfoCardGroupedStructCustomization::MakeAnimationOverrideInstance));
 		PropertyModule.RegisterCustomPropertyTypeLayout(FName(TEXT("ContextMenuEntryOverride")),
-			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FInfoCardGroupedStructCustomization::MakeEntryOverrideInstance));
+			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FContextMenuEntryOverrideCustomization::MakeInstance));
 		PropertyModule.RegisterCustomPropertyTypeLayout(FName(TEXT("InfoCardPayloadDefault")),
 			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FInfoCardPayloadDefaultCustomization::MakeInstance));
 

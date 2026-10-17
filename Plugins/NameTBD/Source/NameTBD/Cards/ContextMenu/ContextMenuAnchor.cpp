@@ -19,6 +19,12 @@ void UContextMenuAnchor::SynchronizeProperties()
 	if (IsDesignTime() && !HasAnyFlags(RF_ClassDefaultObject))
 	{
 		SyncEntryOverridesFromMenu();
+
+		// An override not switched on shows the style's positioning, so switching it on starts from there.
+		if (!bOverridePositioning)
+		{
+			Positioning = UContextMenuStyleAsset::Resolve(StyleOverride, Menu).Positioning;
+		}
 	}
 #endif
 
@@ -96,29 +102,12 @@ bool UContextMenuAnchor::BuildGeneratedInfoCards(TArray<FInfoCardSpec>& OutSpecs
 			Spec.bTriggerOnFocus = false;
 		}
 
-		const bool bAtCursor = Placement == EContextMenuPlacement::AtCursor && !bOpeningFromKeyboard;
-		if (bAtCursor)
-		{
-			// Where the click landed, and staying there: a menu doesn't follow the cursor.
-			Spec.PositionMode = EInfoCardPosition::ToCursor;
-			Spec.CursorPosition = EInfoCardCursorPosition::DownRight;
-			Spec.CardOffset = FVector2D(2.f, 2.f);
-			Spec.bUpdatePositionOnTick = false;
-		}
-		else
-		{
-			Spec.PositionMode = EInfoCardPosition::ToIcon;
-			Spec.IconPosition = Placement == EContextMenuPlacement::RightOfWidget ? EDirection2D::Right : EDirection2D::Down;
-			Spec.IconAnchorPadding = 2.f;
-		}
+		// The style's positioning (default: where the click landed, staying there), or this anchor's own. A keyboard
+		// opening of a To Cursor menu goes beside the widget.
+		(bOverridePositioning ? Positioning : MenuLook.Positioning).ApplyTo(Spec, bOpeningFromKeyboard);
 
-		Spec.bClampToViewport = true;
-		Spec.FlipToAvoidClipping.Source = EInfoCardValueSource::Custom;
-		Spec.FlipToAvoidClipping.CustomValue = true;
 		Spec.RemoveCardOnPressing = ECardRemoveOnPressZone::OutsideCard;
 		Spec.CloseOtherCardsScope = MenuLook.bCloseOtherCardsOnOpen ? ECardCloseOthersScope::AllCards : ECardCloseOthersScope::None;
-		// A menu stays where it opened; a tooltip elsewhere on screen is no reason to move it.
-		Spec.bAvoidOverlappingCards = false;
 		Spec.ZOrder = 1500;
 
 		Spec.Payloads.Add(MenuData);
@@ -148,6 +137,30 @@ bool UContextMenuAnchor::BuildGeneratedInfoCards(TArray<FInfoCardSpec>& OutSpecs
 		break;
 	}
 	return true;
+}
+
+const FInfoCardPositioning& UContextMenuAnchor::GetEffectivePositioning() const
+{
+	return bOverridePositioning ? Positioning : UContextMenuStyleAsset::Resolve(StyleOverride, Menu).Positioning;
+}
+
+void UContextMenuAnchor::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITORONLY_DATA
+	// Below Widget / Right Of Widget were the anchor's own choice: they become its Override Positioning. At Cursor was the
+	// default, which the style's default Positioning is.
+	if (Placement_DEPRECATED != EContextMenuPlacement::AtCursor && !bOverridePositioning)
+	{
+		bOverridePositioning = true;
+		Positioning = FInfoCardPositioning();
+		Positioning.PositionMode = EInfoCardPosition::ToIcon;
+		Positioning.IconPosition = Placement_DEPRECATED == EContextMenuPlacement::RightOfWidget ? EDirection2D::Right : EDirection2D::Down;
+		Positioning.IconAnchorPadding = 2.f;
+	}
+	Placement_DEPRECATED = EContextMenuPlacement::AtCursor;
+#endif
 }
 
 void UContextMenuAnchor::HandleClickOpening()

@@ -268,3 +268,60 @@ void FInfoCardAdditiveAnimations::PostSerialize(const FArchive& Ar)
 	Migrate(PlayInAnimations, PlayIn);
 	Migrate(PlayOutAnimations, PlayOut);
 }
+
+// =================================================================================================
+// FInfoCardPositioning
+// =================================================================================================
+
+void FInfoCardPositioning::ApplyTo(FInfoCardSpec& Spec, bool bFromKeyboard) const
+{
+	// A key or a gamepad opening has no click to open at: beside the widget instead.
+	const bool bBesideWidget = PositionMode == EInfoCardPosition::ToCursor && bFromKeyboard;
+	Spec.PositionMode = bBesideWidget ? EInfoCardPosition::ToIcon : PositionMode;
+	Spec.IconPosition = bBesideWidget ? KeyboardIconPosition : IconPosition;
+	Spec.FillIconPadding = FillIconPadding;
+	Spec.IconAnchorPadding = IconAnchorPadding;
+	Spec.CursorPosition = CursorPosition;
+	Spec.ViewportPosition = ViewportPosition;
+	Spec.CardOffset = CardOffset;
+	Spec.bClampToViewport = bClampToViewport;
+	Spec.FlipToAvoidClipping.Source = EInfoCardValueSource::Custom;
+	Spec.FlipToAvoidClipping.CustomValue = bFlipToAvoidClipping;
+	Spec.ClampPadding = ClampPadding;
+	Spec.bAvoidOverlappingCards = bAvoidOverlappingCards;
+	// At the cursor a menu stays where it opened unless asked to follow; beside a widget it follows the widget, as cards do.
+	Spec.bUpdatePositionOnTick = Spec.PositionMode == EInfoCardPosition::ToCursor ? bFollowCursor : true;
+	Spec.CardTransform = CardTransform;
+}
+
+FInfoCardPositioning FInfoCardPositioning::FromSpec(const FInfoCardSpec& Spec)
+{
+	FInfoCardPositioning Out;
+	Out.PositionMode = Spec.PositionMode;
+	Out.IconPosition = Spec.IconPosition;
+	Out.FillIconPadding = Spec.FillIconPadding;
+	Out.IconAnchorPadding = Spec.IconAnchorPadding;
+	Out.CursorPosition = Spec.CursorPosition;
+	Out.ViewportPosition = Spec.ViewportPosition;
+	Out.CardOffset = Spec.CardOffset;
+	Out.bClampToViewport = Spec.bClampToViewport;
+	Out.bFlipToAvoidClipping = Spec.FlipToAvoidClipping.Resolve(EInfoCardConfigurableBoolKind::FlipToAvoidClipping);
+	Out.ClampPadding = Spec.ClampPadding;
+	Out.bAvoidOverlappingCards = Spec.bAvoidOverlappingCards;
+	Out.bFollowCursor = Spec.bUpdatePositionOnTick;
+	Out.CardTransform = Spec.CardTransform;
+	return Out;
+}
+
+FInfoCardPositioning FInfoCardPositioning::MakeBeside(EDirection2D Side, float Gap)
+{
+	FInfoCardPositioning Beside;
+	Beside.PositionMode = EInfoCardPosition::ToIcon;
+	Beside.IconPosition = Side;
+	Beside.IconAnchorPadding = Gap;
+	Beside.bClampToViewport = true;
+	Beside.bFlipToAvoidClipping = true;
+	// As an Info Card entry's default; a menu beside a row slides clear of the rest of its chain rather than covering it.
+	Beside.bAvoidOverlappingCards = true;
+	return Beside;
+}

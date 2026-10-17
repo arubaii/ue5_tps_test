@@ -6,12 +6,14 @@
 #include "Engine/DataAsset.h"
 #include "Fonts/SlateFontInfo.h"
 #include "Framework/Commands/InputChord.h"
+#include "Framework/Text/TextLayout.h"
 #include "GameplayTagContainer.h"
 #include "Layout/Margin.h"
 #include "Styling/SlateBrush.h"
 #include "Styling/SlateColor.h"
 #include "Types/SlateEnums.h"
 
+#include "NameTBD/Cards/InfoCardTextWidget.h"
 #include "NameTBD/Cards/InfoCardTypes.h"
 #include "NameTBD/Widgets/WidgetSVG.h"
 
@@ -24,6 +26,8 @@ class UContextMenuEntryWidget;
 class UContextMenuStyleAsset;
 class UContextMenuWidget;
 class UInfoCardAnchor;
+class UInfoCardDataAsset;
+class UInputAction;
 class UTexture2D;
 
 /** What one line of a context menu is. */
@@ -64,6 +68,58 @@ enum class EContextMenuInsertPosition : uint8
 	BeforeEntry UMETA(DisplayName = "Before Entry")
 };
 
+/** Where a Text Divider's text sits: the style's Text Divider Alignment, or this entry's own. */
+UENUM(BlueprintType)
+enum class EContextMenuTextDividerAlignment : uint8
+{
+	StyleDefault UMETA(DisplayName = "Style Default", ToolTip = "The style's Text Divider Alignment."),
+	Left,
+	Center,
+	Right
+};
+
+/** How a row's shortcuts are drawn. */
+UENUM(BlueprintType)
+enum class EContextMenuBindingDisplay : uint8
+{
+	Text UMETA(ToolTip = "Key names as text: Ctrl+Shift+T."),
+	Image UMETA(ToolTip = "Each key's art from Project Settings > Menus > Key Glyph Sets, for the device the player is using. A key with no art there shows its name.")
+};
+
+/** How one row draws its shortcuts: as the style says, or its own way. */
+UENUM(BlueprintType)
+enum class EContextMenuEntryBindingDisplay : uint8
+{
+	StyleDefault UMETA(DisplayName = "Style Default", ToolTip = "The style's Bindings > Display."),
+	Text UMETA(ToolTip = "Key names as text: Ctrl+Shift+T."),
+	Image UMETA(ToolTip = "Each key's art from Project Settings > Menus > Key Glyph Sets. A key with no art there shows its name.")
+};
+
+/** Where the frame (the style's Frame Brush) goes on a row's shortcuts. */
+UENUM(BlueprintType)
+enum class EContextMenuBindingFrame : uint8
+{
+	None UMETA(ToolTip = "No frame."),
+	EachKey UMETA(DisplayName = "Each Key", ToolTip = "A frame around every key. The delimiters between keys stay outside the frames: [Ctrl] + [C]."),
+	WholeBinding UMETA(DisplayName = "Whole Binding", ToolTip = "One frame around all the keys of a binding, delimiters inside: [Ctrl + C].")
+};
+
+/** How a row shows its Description when the cursor rests on it. */
+UENUM(BlueprintType)
+enum class EContextMenuTooltipMode : uint8
+{
+	EngineTooltip UMETA(DisplayName = "Engine Tooltip", ToolTip = "The engine's plain tooltip, following the cursor."),
+	TooltipCard UMETA(DisplayName = "Tooltip Card", ToolTip = "An info card tooltip (a Tooltip Card Anchor around the row): its template, text style, delay and positioning set here.")
+};
+
+/** What opens the menu attached to a Button row. */
+UENUM(BlueprintType)
+enum class EContextMenuAttachedMenuTrigger : uint8
+{
+	Hover UMETA(ToolTip = "The cursor resting on the row (after the style's Submenu Delay), or Right on the keyboard. Clicking the row still runs it and closes the menu as usual."),
+	Press UMETA(ToolTip = "Clicking the row (or Enter / a gamepad's confirm, or Right): its actions run, the attached menu opens beside it, and the menu the row is in stays open.")
+};
+
 /** An icon on a menu row: a texture or an SVG (drawn sharp at the size it is shown). */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FContextMenuIcon
@@ -87,6 +143,140 @@ struct NAMETBD_API FContextMenuIcon
 	FLinearColor Tint = FLinearColor::White;
 
 	bool IsSet() const { return ImageSource == EWidgetImageSource::SVG ? SVG != nullptr : Texture != nullptr; }
+};
+
+/** How one text part of a row sits: its justification, and its alignment in the space the row gives it. */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FContextMenuTextAlignment
+{
+	GENERATED_BODY()
+
+	FContextMenuTextAlignment() = default;
+	FContextMenuTextAlignment(ETextJustify::Type InJustification, EHorizontalAlignment InHorizontal)
+		: Justification(InJustification), HorizontalAlignment(InHorizontal)
+	{
+	}
+
+	/** How the lines of the text line up inside the text's own box (which is as wide as its space when Horizontal is Fill). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alignment")
+	TEnumAsByte<ETextJustify::Type> Justification = ETextJustify::Left;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alignment", meta = (DisplayName = "Horizontal"))
+	TEnumAsByte<EHorizontalAlignment> HorizontalAlignment = HAlign_Fill;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Alignment", meta = (DisplayName = "Vertical"))
+	TEnumAsByte<EVerticalAlignment> VerticalAlignment = VAlign_Center;
+};
+
+/**
+ * How rows show their Description (the row's tooltip): the engine's plain tooltip, or an info card tooltip with every setting
+ * a Tooltip Card Anchor has - template, text style, delay, and the Info Card Anchor's positioning.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FContextMenuTooltipStyle
+{
+	GENERATED_BODY()
+
+	FContextMenuTooltipStyle();
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips")
+	EContextMenuTooltipMode Mode = EContextMenuTooltipMode::EngineTooltip;
+
+	/**
+	 * Where the tooltip's card class, trigger, delay, placement, sounds and animations come from: an Info Card Data Asset's
+	 * entry (Template Card ID, else its first). Empty: Project Settings > Info Card > Tooltips > Default Tooltip Template,
+	 * else the built-in tooltip (a Text Info Card).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Tooltip Template", EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard", EditConditionHides))
+	TObjectPtr<UInfoCardDataAsset> Template = nullptr;
+
+	/** Which entry of the template. None: its first. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Template Card ID", EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard", EditConditionHides))
+	FName TemplateCardId = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Override Text Style", EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard", EditConditionHides))
+	bool bOverrideTextStyle = false;
+
+	/** The tooltip's look when its card is a Text Info Card (the built-in one is): panel, padding, width, fonts, colours. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard && bOverrideTextStyle", EditConditionHides))
+	FInfoCardTextStyle TextStyle;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Override Delay", EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard", EditConditionHides))
+	bool bOverrideDelay = true;
+
+	/** Seconds the cursor rests on a row before its tooltip shows, instead of the template's Highlight Delay. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard && bOverrideDelay", EditConditionHides, ClampMin = "0", UIMax = "3", Units = "s"))
+	float Delay = 0.6f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Override Positioning", EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard", EditConditionHides))
+	bool bOverridePositioning = true;
+
+	/**
+	 * Where the tooltip opens, instead of the template's: every placement an Info Card Anchor's entry has. Default: below and
+	 * to the right of the cursor, clear of a submenu opening beside the row.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard && bOverridePositioning", EditConditionHides))
+	FInfoCardPositioning Positioning;
+};
+
+/** How rows show their shortcuts (Shortcut, More Shortcuts, Gamepad Shortcut, Shortcut Input Action). */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FContextMenuBindingStyle
+{
+	GENERATED_BODY()
+
+	FContextMenuBindingStyle();
+
+	/** Text: key names. Image: the keys' art from the project's Key Glyph Sets (no picking images per row). A row can choose its own. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
+	EContextMenuBindingDisplay Display = EContextMenuBindingDisplay::Text;
+
+	/** Between the keys of one binding: Ctrl+C. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
+	FText KeyDelimiter;
+
+	/** Between a row's bindings when it shows more than one: Ctrl+C, Ctrl+Insert. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
+	FText BindingSeparator;
+
+	/** Space on each side of a delimiter and a separator. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (ClampMin = "0", UIMax = "16", ForceUnits = "px"))
+	float KeyGap = 0.f;
+
+	/** A frame around each key, or around each whole binding (Frame Brush). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
+	EContextMenuBindingFrame Frame = EContextMenuBindingFrame::None;
+
+	/** The frame's look: a rounded box with an outline is a key cap. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (EditCondition = "Frame != EContextMenuBindingFrame::None", EditConditionHides))
+	FSlateBrush FrameBrush;
+
+	/** Space between the frame and what it holds. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (EditCondition = "Frame != EContextMenuBindingFrame::None", EditConditionHides))
+	FMargin FramePadding = FMargin(5.f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (InlineEditConditionToggle))
+	bool bOverrideFont = false;
+
+	/** The keys' font, instead of the style's Shortcut Font. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (EditCondition = "bOverrideFont"))
+	FSlateFontInfo Font;
+
+	/** Height of a key's art (Image); wide art keeps its proportions. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (ClampMin = "4", UIMax = "48", ForceUnits = "px"))
+	float GlyphHeight = 16.f;
+
+	/** At most this many bindings per row, in order (Shortcut first). 0: all. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings", meta = (ClampMin = "0", UIMax = "4"))
+	int32 MaxBindings = 0;
+
+	/** Rows' Gamepad Shortcuts (and Input Actions' gamepad keys) show only while the player uses a gamepad. Off: always. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
+	bool bGamepadBindingsOnlyOnGamepad = true;
+
+	/** While the player uses a gamepad, keyboard shortcuts aren't shown (a row with a Gamepad Shortcut shows that). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
+	bool bHideKeyboardBindingsOnGamepad = false;
 };
 
 /**
@@ -116,40 +306,71 @@ struct NAMETBD_API FContextMenuEntry
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
 	FText Label;
 
-	/** Shown as the row's tooltip on hover - what it does, or why it is disabled. */
+	/** Shown as the row's tooltip on hover - what it does, or why it is disabled. The style's Row Tooltips decide its look. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (MultiLine = true, EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
 	FText Description;
 
-	/** Before everything else, in the icon column (so labels line up whether or not a row has one). A checked row shows its check mark here instead. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Left Icon", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
-	FContextMenuIcon LeftIcon;
+	/**
+	 * Before everything else, in the icon column, in order (the style's Icon Gap and Icon Delimiter between them). The column
+	 * is as wide as the row with the most left icons, so every label in the menu starts at the same place. A check box or
+	 * radio row shows its check mark there instead.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Left Icons", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
+	TArray<FContextMenuIcon> LeftIcons;
 
-	/** Right before the label. With no label, an icon-only row. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Center Icon", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
-	FContextMenuIcon CenterIcon;
+	/** Right before the label, in order. With no label, an icon-only row. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Center Icons", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
+	TArray<FContextMenuIcon> CenterIcons;
 
-	/** On the right, after Right Text and the shortcut. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Right Icon", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
-	FContextMenuIcon RightIcon;
+	/** On the right, after Right Text and the shortcut, in order. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Right Icons", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
+	TArray<FContextMenuIcon> RightIcons;
 
-	/** Free text on the right, in the shortcut's font: a count, a value, a hint. */
+	/** Text in the middle of the row, between the label (the left text) and Right Text, aligned by the style's Center Text Alignment. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Center Text", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
+	FText CenterText;
+
+	/** Free text on the right, in the shortcut's font: a count, a value, a hint. Aligned by the style's Right Text Alignment. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Right Text", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
 	FText RightText;
+
+	// Shortcut -----------------------------------------------------------
 
 	/**
 	 * A keyboard shortcut, shown on the right ("Ctrl+C"). While the menu is open, pressing it chooses this row (the menu
 	 * asset's Shortcuts Work While Open). Showing it doesn't bind it anywhere else in the game.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
 	FInputChord Shortcut;
+
+	/** Other shortcuts for the same row (Ctrl+Insert as well as Ctrl+C): shown after Shortcut, and working while open too. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (DisplayName = "More Shortcuts", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
+	TArray<FInputChord> MoreShortcuts;
+
+	/** A gamepad button for this row: shown while the player uses a gamepad (the style's Bindings decide), working while open. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (DisplayName = "Gamepad Shortcut", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
+	FKey GamepadShortcut;
+
+	/**
+	 * An Enhanced Input action whose keys this row shows: the key the player has it on for keyboard and for gamepad, their
+	 * rebinding included (Menu Input Subsystem). Those keys choose the row while the menu is open.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (DisplayName = "Shortcut Input Action", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
+	TObjectPtr<UInputAction> ShortcutAction = nullptr;
+
+	/** Text or the keys' art (Key Glyph Sets), instead of the style's Bindings > Display. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (DisplayName = "Shortcut Display", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
+	EContextMenuEntryBindingDisplay ShortcutDisplay = EContextMenuEntryBindingDisplay::StyleDefault;
+
+	// Content (Text Divider, Spacer) -------------------------------------
 
 	/** Text Divider: its text. Empty: a plain divider line. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Text", EditCondition = "EntryType == EContextMenuEntryType::Header", EditConditionHides))
 	FText HeaderText;
 
-	/** Text Divider: where the text sits; the line fills the rest. */
+	/** Text Divider: where the text sits (the line fills the rest): the style's Text Divider Alignment, or this one's own. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Text Alignment", EditCondition = "EntryType == EContextMenuEntryType::Header", EditConditionHides))
-	TEnumAsByte<EHorizontalAlignment> HeaderAlignment = HAlign_Left;
+	EContextMenuTextDividerAlignment TextDividerAlignment = EContextMenuTextDividerAlignment::StyleDefault;
 
 	/** Text Divider: draw the line beside the text. Off: the text alone. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Show Line", EditCondition = "EntryType == EContextMenuEntryType::Header", EditConditionHides))
@@ -185,6 +406,26 @@ struct NAMETBD_API FContextMenuEntry
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action", meta = (EditCondition = "EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
 	TObjectPtr<UContextMenuAsset> Submenu = nullptr;
 
+	// Attached Menu ------------------------------------------------------
+
+	/**
+	 * A menu of its own beside this Button row, opened on hover or on press (Open On): a split button - "Open" runs, its arrow
+	 * of choices opens beside it - or a nested menu on a row that still does something when clicked.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attached Menu", meta = (DisplayName = "Attached Menu", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
+	TObjectPtr<UContextMenuAsset> AttachedMenu = nullptr;
+
+	/** The attached menu's look. Empty: the menu this row is in (as a submenu). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attached Menu", meta = (DisplayName = "Style", EditCondition = "EntryType == EContextMenuEntryType::Button && AttachedMenu != nullptr", EditConditionHides))
+	TObjectPtr<UContextMenuStyleAsset> AttachedMenuStyle = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attached Menu", meta = (DisplayName = "Open On", EditCondition = "EntryType == EContextMenuEntryType::Button && AttachedMenu != nullptr", EditConditionHides))
+	EContextMenuAttachedMenuTrigger AttachedMenuOpenOn = EContextMenuAttachedMenuTrigger::Hover;
+
+	/** Where it opens. Default: beside the row, on its right (flipping left at the screen's edge), as a hover dropdown. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attached Menu", meta = (DisplayName = "Positioning", EditCondition = "EntryType == EContextMenuEntryType::Button && AttachedMenu != nullptr", EditConditionHides))
+	FInfoCardPositioning AttachedMenuPositioning = FInfoCardPositioning::MakeBeside(EDirection2D::Right, 4.f);
+
 	// State --------------------------------------------------------------
 
 	/** Off: shown greyed out, can't be chosen, and keyboard / gamepad navigation skips it. */
@@ -211,14 +452,47 @@ struct NAMETBD_API FContextMenuEntry
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Look", meta = (DisplayName = "Row Button Preset", EditCondition = "EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu", EditConditionHides))
 	TObjectPtr<UContextMenuButtonPresetAsset> RowButtonPreset = nullptr;
 
+#if WITH_EDITORONLY_DATA
+	// Before rows had icon lists and Text Dividers a Style Default: loaded through CoreRedirects (Config/DefaultNameTBD.ini),
+	// moved into LeftIcons... / TextDividerAlignment by PostSerialize, never saved again (CPF_Deprecated).
+	UPROPERTY()
+	FContextMenuIcon LeftIcon_DEPRECATED;
+
+	UPROPERTY()
+	FContextMenuIcon CenterIcon_DEPRECATED;
+
+	UPROPERTY()
+	FContextMenuIcon RightIcon_DEPRECATED;
+
+	UPROPERTY()
+	TEnumAsByte<EHorizontalAlignment> HeaderAlignment_DEPRECATED = HAlign_Left;
+#endif
+
 	/** A row the player can choose (a button or a submenu that is enabled). */
 	bool IsSelectable() const
 	{
 		return bEnabled && (EntryType == EContextMenuEntryType::Button || EntryType == EContextMenuEntryType::Submenu);
 	}
 
+	/** A Button row with an Attached Menu. */
+	bool HasAttachedMenu() const { return EntryType == EContextMenuEntryType::Button && AttachedMenu != nullptr; }
+
+	/** Left Icons that are set (an empty element in the list is skipped). */
+	int32 CountLeftIcons() const;
+
 	/** The text the Entry ID is filled from when empty. */
 	FString GetIdSourceText() const;
+
+	void PostSerialize(const FArchive& Ar);
+};
+
+template<>
+struct TStructOpsTypeTraits<FContextMenuEntry> : public TStructOpsTypeTraitsBase2<FContextMenuEntry>
+{
+	enum
+	{
+		WithPostSerialize = true
+	};
 };
 
 /**
@@ -267,8 +541,25 @@ struct NAMETBD_API FContextMenuStyle
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "0", UIMax = "64", ForceUnits = "px"))
 	float RowHeight = 28.f;
 
+	/** Between a row's highlight and its parts (the label starts this far inside the highlight). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows")
 	FMargin RowPadding = FMargin(8.f, 2.f);
+
+	/**
+	 * Between a row's edges and its highlight (or its Row Button Preset's button), on top of the Panel Padding: highlights
+	 * that stop short of the panel's sides, or gaps between neighbouring highlights. 0: the highlight is as wide as the menu
+	 * less Panel Padding.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (DisplayName = "Highlight Inset"))
+	FMargin RowHighlightInset = FMargin(0.f);
+
+	/** Where a row's parts sit across the row. Fill: the label takes the room left, so shortcuts line up on the right. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (DisplayName = "Content Horizontal Alignment"))
+	TEnumAsByte<EHorizontalAlignment> RowContentHorizontalAlignment = HAlign_Fill;
+
+	/** Where a row's parts sit in its height (Row Height). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (DisplayName = "Content Vertical Alignment"))
+	TEnumAsByte<EVerticalAlignment> RowContentVerticalAlignment = VAlign_Center;
 
 	/** Drawn behind a row while hovered or focused (no Row Button Preset). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows")
@@ -281,11 +572,15 @@ struct NAMETBD_API FContextMenuStyle
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "4", UIMax = "48", ForceUnits = "px"))
 	float IconSize = 16.f;
 
+	/** How rows show their Description: the engine's plain tooltip, or an info card tooltip set up here. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (DisplayName = "Row Tooltips"))
+	FContextMenuTooltipStyle RowTooltips;
+
 	/** Space between a row's parts (icon, label, right text, shortcut). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "0", UIMax = "32", ForceUnits = "px"))
 	float PartGap = 8.f;
 
-	/** Keep the icon column even when no row has a left icon or check mark, so labels line up across menus. */
+	/** Keep the icon column (one icon wide) even when no row has a left icon or check mark, so labels line up across menus. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows")
 	bool bAlwaysReserveIconColumn = false;
 
@@ -313,6 +608,26 @@ struct NAMETBD_API FContextMenuStyle
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
 	FSlateColor ShortcutColor = FSlateColor(FLinearColor(0.9f, 0.91f, 0.93f, 0.5f));
 
+	/** The label (a row's left text): left by default, taking the room the row's other parts leave. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text", meta = (DisplayName = "Label Alignment"))
+	FContextMenuTextAlignment LabelAlignment = FContextMenuTextAlignment(ETextJustify::Left, HAlign_Fill);
+
+	/** Center Text (label font and colours): in the middle of the room between the label and the right-hand parts. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text", meta = (DisplayName = "Center Text Alignment"))
+	FContextMenuTextAlignment CenterTextAlignment = FContextMenuTextAlignment(ETextJustify::Center, HAlign_Center);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text", meta = (DisplayName = "Right Text Alignment"))
+	FContextMenuTextAlignment RightTextAlignment = FContextMenuTextAlignment(ETextJustify::Right, HAlign_Right);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text", meta = (DisplayName = "Shortcut Alignment"))
+	FContextMenuTextAlignment ShortcutAlignment = FContextMenuTextAlignment(ETextJustify::Right, HAlign_Right);
+
+	// Bindings ---------------------------------------------------------------------------------------------------------
+
+	/** How shortcuts are shown: text or the keys' art, the delimiter between keys (+), frames around them. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bindings")
+	FContextMenuBindingStyle Bindings;
+
 	// Icons ------------------------------------------------------------------------------------------------------------
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons")
@@ -323,6 +638,14 @@ struct NAMETBD_API FContextMenuStyle
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons")
 	FLinearColor DisabledIconTint = FLinearColor(0.85f, 0.86f, 0.9f, 0.35f);
+
+	/** Space between the icons of a row's Left / Center / Right Icons (on each side of Icon Delimiter, when there is one). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons", meta = (ClampMin = "0", UIMax = "16", ForceUnits = "px"))
+	float IconGap = 4.f;
+
+	/** Drawn between a row's icons, in the shortcut font and colours ("|", "·"). Empty: just Icon Gap. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons")
+	FText IconDelimiter;
 
 	/** Shown on submenu rows. Unset: a chevron drawn as text. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons")
@@ -359,6 +682,22 @@ struct NAMETBD_API FContextMenuStyle
 	/** Text Dividers in capitals ("INVENTORY"), as many games' menus do. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers", meta = (DisplayName = "Uppercase Text Dividers"))
 	bool bUppercaseHeaders = false;
+
+	/**
+	 * Text Dividers whose Text Alignment is Style Default: Horizontal is where the text sits (the line fills the rest; Fill
+	 * reads as Left), Justification lines up text that wraps or stands alone, Vertical places it in the row.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers", meta = (DisplayName = "Text Divider Alignment"))
+	FContextMenuTextAlignment TextDividerAlignment = FContextMenuTextAlignment(ETextJustify::Left, HAlign_Left);
+
+	// Positioning ------------------------------------------------------------------------------------------------------
+
+	/**
+	 * Where menus in this style open: at the cursor (the default - opened from a key, beside the widget), beside the widget
+	 * (a dropdown, a flyout) or at a corner of the screen. A Context Menu Anchor can override it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning")
+	FInfoCardPositioning Positioning;
 
 	// Behaviour --------------------------------------------------------------------------------------------------------
 
@@ -463,7 +802,12 @@ public:
 #endif
 };
 
-/** One anchor's change to one entry of its menu, kept by Entry ID. Synced from the menu asset; untouched means no change. */
+/**
+ * One anchor's change to one entry of its menu, kept by Entry ID. Synced from the menu asset; untouched means no change.
+ *
+ * Each field's EditCondition names its override toggle alone: an inline toggle only shows (and can be ticked) for an
+ * EditCondition of a single bool. Remove greys the fields out through the editor's row customization instead.
+ */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FContextMenuEntryOverride
 {
@@ -473,26 +817,30 @@ struct NAMETBD_API FContextMenuEntryOverride
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Entry ID", EditCondition = "false"))
 	FName EntryId = NAME_None;
 
-	/** Leaves this entry out of this anchor's menu. */
+	/**
+	 * Leaves this entry out of this anchor's menu (shown as a check box beside the Entry ID; the fields below grey out while it
+	 * is on). To keep the row but grey it out, override Enabled instead.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Remove"))
 	bool bRemove = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (InlineEditConditionToggle))
 	bool bOverrideEnabled = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Enabled", EditCondition = "bOverrideEnabled && !bRemove"))
+	/** Off: the row stays in the menu, greyed out, and can't be chosen (it isn't removed). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Enabled", EditCondition = "bOverrideEnabled"))
 	bool bEnabled = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (InlineEditConditionToggle))
 	bool bOverrideLabel = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Label", EditCondition = "bOverrideLabel && !bRemove"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Label", EditCondition = "bOverrideLabel"))
 	FText Label;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (InlineEditConditionToggle))
 	bool bOverrideChecked = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Checked", EditCondition = "bOverrideChecked && !bRemove"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Entry", meta = (DisplayName = "Checked", EditCondition = "bOverrideChecked"))
 	bool bChecked = false;
 
 	bool IsUntouched() const { return !bRemove && !bOverrideEnabled && !bOverrideLabel && !bOverrideChecked; }
